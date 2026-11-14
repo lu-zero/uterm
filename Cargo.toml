@@ -3,13 +3,14 @@ name = "uterm"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["clipboard", "x11", "wayland"]
+clipboard = ["rio-vt/clipboard"]
+x11 = ["rio-vt/x11"]
+wayland = ["rio-vt/wayland"]
+
 [dependencies]
+rio-vt = { version = "0.5", default-features = true }
 winit = "0.30"
 softbuffer = "0.4"
 fontdue = "0.9"
-
-[target.'cfg(not(all(unix, not(target_os = "macos"))))'.dependencies]
-rio-vt = { version = "0.5", default-features = true, features = ["clipboard"] }
-
-[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-rio-vt = { version = "0.5", default-features = true, features = ["clipboard", "x11", "wayland"] }
