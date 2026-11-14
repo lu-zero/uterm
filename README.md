@@ -9,8 +9,10 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - PTY-backed interactive shell (default login shell via `rio_vt::teletypewriter::create_pty_with_spawn`)
 - VT state and parsing driven by `rio_vt::crosswords::Crosswords` + `performer::Machine`
 - HiDPI-aware cell sizing and rendering with bundled **Cascadia Code NF**
+- Per-cell foreground/background color rendering (ANSI 16/256/truecolor, named/indexed palette resolution, inverse)
 - Basic keyboard input (text, arrows/home/end/page/delete, Ctrl/Alt combos)
-- Minimal tab support (one shell per tab)
+- Minimal tab support (one shell per tab), clickable tab bar
+- Basic mouse reporting to the terminal (SGR/UTF-8 modes) for button, motion/drag, and wheel events when enabled by applications
 
 ### Tab keybindings
 
@@ -18,6 +20,7 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - **Ctrl+Shift+W**: close active tab (exits if last)
 - **Ctrl+Tab** / **Ctrl+PageDown**: next tab
 - **Ctrl+Shift+Tab** / **Ctrl+PageUp**: previous tab
+- **Mouse click on tab bar**: switch tab
 
 ## Building and running
 
@@ -35,10 +38,10 @@ cargo run --release
 
 This is intentionally minimal:
 
-- Renders default foreground/background/cursor palette (no per-cell SGR color/attribute rendering yet)
-- No mouse reporting, selection/clipboard, IME, or xterm/kitty keyboard protocol
+- Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
+- No selection/clipboard, IME, or xterm/kitty keyboard protocol
 - No scrollback UI and no rendered graphics protocols
-- Simple static tab labels/bar (no OSC titles, no mouse tab controls)
+- Simple static tab labels/bar (no OSC titles, no mouse tab reordering/close buttons)
 
 ## License
 
