@@ -199,9 +199,12 @@ impl AppState {
 
     fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
         if self.tabs.is_empty() { return; }
+        self.active = self.active.min(self.tabs.len() - 1);
         self.tabs.remove(self.active);
         if self.tabs.is_empty() {
+            self.active = 0;
             event_loop.exit();
+            self.window.set_title("uterm");
             return;
         }
         if self.active >= self.tabs.len() {
@@ -215,14 +218,17 @@ impl AppState {
             let was_active = idx == self.active;
             self.tabs.remove(idx);
             if self.tabs.is_empty() {
+                self.active = 0;
                 event_loop.exit();
+                self.window.set_title("uterm");
                 return;
             }
             if was_active {
                 self.active = idx.min(self.tabs.len() - 1);
             } else if idx < self.active {
-                self.active -= 1;
+                self.active = self.active.saturating_sub(1);
             }
+            if self.active >= self.tabs.len() { self.active = self.tabs.len() - 1; }
             self.sync_window_title();
         }
     }
@@ -232,14 +238,17 @@ impl AppState {
         let was_active = idx == self.active;
         self.tabs.remove(idx);
         if self.tabs.is_empty() {
+            self.active = 0;
             event_loop.exit();
+            self.window.set_title("uterm");
             return;
         }
         if was_active {
             self.active = idx.min(self.tabs.len() - 1);
         } else if idx < self.active {
-            self.active -= 1;
+            self.active = self.active.saturating_sub(1);
         }
+        if self.active >= self.tabs.len() { self.active = self.tabs.len() - 1; }
         self.sync_window_title();
     }
 
@@ -277,20 +286,19 @@ impl AppState {
         let text = {
             let term = tab.terminal.lock();
             let Some(range) = term.selection.as_ref().and_then(|s| s.to_range(&term)) else { return; };
-            if range.is_block {
-                // Fallback: copy linear bounds; block copy not specially handled.
-                term.bounds_to_string(range.start, range.end)
-            } else {
-                term.bounds_to_string(range.start, range.end)
-            }
+            term.bounds_to_string(range.start, range.end)
         };
         if !text.is_empty() {
-            self.clipboard.set(ClipboardType::Clipboard, text);
+            self.clipboard.set(ClipboardType::Clipboard, text.clone());
+            self.clipboard.set(ClipboardType::Selection, text);
         }
     }
 
-    fn paste_clipboard(&mut self) {
-        let text = self.clipboard.get(ClipboardType::Clipboard);
+    fn paste_from(&mut self, ty: ClipboardType) {
+        let mut text = self.clipboard.get(ty);
+        if text.is_empty() && matches!(ty, ClipboardType::Selection) {
+            text = self.clipboard.get(ClipboardType::Clipboard);
+        }
         if text.is_empty() { return; }
         let Some(tab) = self.tabs.get(self.active) else { return; };
         let bracketed = {
@@ -305,6 +313,10 @@ impl AppState {
         let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(payload.into_bytes())));
     }
 
+    fn paste_clipboard(&mut self) {
+        self.paste_from(ClipboardType::Clipboard);
+    }
+
     fn ensure_glyph(&mut self, ch: char) {
         if !self.glyph_cache.contains_key(&ch) {
             let raster = self.font.rasterize(ch, self.font_px);
@@ -313,6 +325,8 @@ impl AppState {
     }
 
     fn render(&mut self) {
+        if self.tabs.is_empty() { return; }
+        if self.active >= self.tabs.len() { self.active = self.tabs.len() - 1; }
         let size = self.window.inner_size();
         let (width, height) = (size.width, size.height);
         if width == 0 || height == 0 { return; }
@@ -352,12 +366,11 @@ impl AppState {
             (cells, ncols, nrows, c.row.0, c.col.0, show, shape, default_bg, cur_u, selection)
         };
 
-        let (tab_layouts, hint) = self.tab_layouts(width as usize);
+        let tab_layouts = self.tab_layouts(width as usize);
         self.ensure_glyph('×');
         for (label, _, _, _) in &tab_layouts {
             for ch in label.chars() { self.ensure_glyph(ch); }
         }
-        for ch in hint.chars() { self.ensure_glyph(ch); }
         for cell in &cells {
             if cell.ch != '\0' && cell.ch != ' ' { self.ensure_glyph(cell.ch); }
         }
@@ -413,23 +426,6 @@ impl AppState {
                     let gy = self.ascent as i32 - metrics.ymin - metrics.height as i32;
                     blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, if is_active { active_fg } else { close_fg });
                     let _ = &mut cx;
-                }
-            }
-        }
-
-        // hint at right if space
-        let used_w = tab_layouts.last().map(|(_, x, w, _)| x + w).unwrap_or(4);
-        let hint_w = hint.chars().count() * self.cell_w;
-        if !hint.is_empty() && used_w + 8 + hint_w < bw {
-            let mut cx = (bw.saturating_sub(hint_w + 4)) as i32;
-            for ch in hint.chars() {
-                if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
-                    let gx = cx + metrics.xmin;
-                    let gy = self.ascent as i32 - metrics.ymin - metrics.height as i32;
-                    blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, rgb_u32(0x8a, 0x96, 0xa3));
-                    cx += metrics.advance_width.ceil() as i32;
-                } else {
-                    cx += self.cell_w as i32;
                 }
             }
         }
@@ -491,8 +487,7 @@ impl AppState {
         format!(" {} ", t)
     }
 
-    fn tab_layouts(&self, bw: usize) -> (Vec<(String, usize, usize, Option<usize>)>, String) {
-        // returns (label_without_close_glyph_drawn_inline? label text, x, w, close_x) and hint
+    fn tab_layouts(&self, bw: usize) -> Vec<(String, usize, usize, Option<usize>)> {
         let mut layouts = Vec::new();
         let mut xoff = 4usize;
         let gap = 4usize;
@@ -506,14 +501,13 @@ impl AppState {
             xoff = xoff.saturating_add(w + gap);
             if xoff >= bw { break; }
         }
-        let hint = if self.tabs.len() <= 4 { "+  ^S-C/V copy/paste".to_string() } else { String::new() };
-        (layouts, hint)
+        layouts
     }
 
     fn tab_bar_hit(&self, x: f64, y: f64) -> Option<(usize, bool)> {
         let bar_h = self.cell_h as f64;
         if y < 0.0 || y >= bar_h { return None; }
-        let (layouts, _) = self.tab_layouts(self.window.inner_size().width as usize);
+        let layouts = self.tab_layouts(self.window.inner_size().width as usize);
         for (i, (_, x0, w, close_x0)) in layouts.iter().enumerate() {
             let start = *x0 as f64;
             let end = (*x0 + *w) as f64;
@@ -621,7 +615,7 @@ impl AppState {
                     if let Some(tab) = self.tabs.get(self.active) {
                         let mut term = tab.terminal.lock();
                         let point = Pos::new(Line(row as i32), Column(col));
-                        let ty = if self.modifiers.state().shift_key() { SelectionType::Simple } else { SelectionType::Simple };
+                        let ty = SelectionType::Simple;
                         term.selection = Some(Selection::new(ty, point, side));
                     }
                     self.selecting = true;
@@ -640,6 +634,15 @@ impl AppState {
                     }
                 }
                 self.selecting = false;
+            }
+            (MouseButton::Middle, ElementState::Pressed) => {
+                self.mouse_buttons[1] = true;
+                if self.terminal_cell_at(x, y).is_some() {
+                    self.paste_from(ClipboardType::Selection);
+                }
+            }
+            (MouseButton::Middle, ElementState::Released) => {
+                self.mouse_buttons[1] = false;
             }
             (_, ElementState::Pressed) => {
                 self.mouse_buttons[idx] = true;
