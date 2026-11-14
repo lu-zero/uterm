@@ -21,6 +21,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
+use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::{Window, WindowId as WinitWindowId};
 
 const CASCADIA_TTF: &[u8] = include_bytes!("../CascadiaCodeNF.ttf");
@@ -924,6 +925,14 @@ impl ApplicationHandler<UiEvent> for Uterm {
         let listener = Listener { proxy: self.proxy.clone() };
         let first = Tab::new(0, cols, rows, cell_w, cell_h, listener);
 
+        let clipboard = unsafe {
+            event_loop
+                .display_handle()
+                .ok()
+                .map(|h| Clipboard::new(h.as_raw()))
+                .unwrap_or_default()
+        };
+
         let st = AppState {
             window,
             surface,
@@ -941,7 +950,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
             selecting: false,
-            clipboard: Clipboard::default(),
+            clipboard,
         };
         st.sync_window_title();
         st.window.request_redraw();

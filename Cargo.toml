@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rio-vt = { version = "0.5", default-features = true, features = ["clipboard"] }
 winit = "0.30"
 softbuffer = "0.4"
 fontdue = "0.9"
+
+[target.'cfg(not(all(unix, not(target_os = "macos"))))'.dependencies]
+rio-vt = { version = "0.5", default-features = true, features = ["clipboard"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+rio-vt = { version = "0.5", default-features = true, features = ["clipboard", "x11", "wayland"] }
