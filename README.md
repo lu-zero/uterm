@@ -13,14 +13,17 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - Basic keyboard input (text, arrows/home/end/page/delete, Ctrl/Alt combos)
 - Minimal tab support (one shell per tab), clickable tab bar; tabs close when the shell exits (e.g. `Ctrl+D`) or via shortcut
 - Local mouse selection/highlight in the terminal area when mouse reporting is disabled by the application
+- Basic copy/paste integration for local selection and clipboard (`Ctrl+Shift+C` to copy selection, `Ctrl+Shift+V` to paste; bracketed paste used when enabled by the shell/app)
 - Basic mouse reporting to the terminal (SGR/UTF-8 modes) for button, motion/drag, and wheel events when enabled by applications
 
-### Tab keybindings
+### Keybindings
 
 - **Ctrl+Shift+T**: new tab
 - **Ctrl+Shift+W**: close active tab (exits if last)
 - **Ctrl+Tab** / **Ctrl+PageDown**: next tab
 - **Ctrl+Shift+Tab** / **Ctrl+PageUp**: previous tab
+- **Ctrl+Shift+C**: copy current selection to clipboard
+- **Ctrl+Shift+V**: paste clipboard into terminal
 - **Mouse click on tab bar**: switch tab
 
 ## Building and running
@@ -40,7 +43,7 @@ cargo run --release
 This is intentionally minimal:
 
 - Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
-- Local text selection/highlight only (no clipboard copy/paste integration), no IME, and no xterm/kitty keyboard protocol
+- Basic local selection copy/paste via shortcuts; no OSC 52 clipboard handling, IME, or xterm/kitty keyboard protocol
 - No scrollback UI and no rendered graphics protocols
 - Simple static tab labels/bar (no OSC titles, no mouse tab reordering/close buttons)
 

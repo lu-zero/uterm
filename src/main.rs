@@ -1,5 +1,6 @@
 use fontdue::Font;
 use rio_vt::ansi::CursorShape;
+use rio_vt::clipboard::{Clipboard, ClipboardType};
 use rio_vt::config::colors::term::TermColors;
 use rio_vt::config::colors::{AnsiColor, NamedColor};
 use rio_vt::crosswords::grid::Dimensions;
@@ -145,6 +146,7 @@ struct AppState {
     cursor_pos: (f64, f64),
     mouse_buttons: [bool; 3], // left, middle, right
     selecting: bool,
+    clipboard: Clipboard,
 }
 
 impl AppState {
@@ -210,6 +212,39 @@ impl AppState {
         if !self.tabs.is_empty() {
             self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
         }
+    }
+
+    fn copy_selection(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else { return; };
+        let text = {
+            let term = tab.terminal.lock();
+            let Some(range) = term.selection.as_ref().and_then(|s| s.to_range(&term)) else { return; };
+            if range.is_block {
+                // Fallback: copy linear bounds; block copy not specially handled.
+                term.bounds_to_string(range.start, range.end)
+            } else {
+                term.bounds_to_string(range.start, range.end)
+            }
+        };
+        if !text.is_empty() {
+            self.clipboard.set(ClipboardType::Clipboard, text);
+        }
+    }
+
+    fn paste_clipboard(&mut self) {
+        let text = self.clipboard.get(ClipboardType::Clipboard);
+        if text.is_empty() { return; }
+        let Some(tab) = self.tabs.get(self.active) else { return; };
+        let bracketed = {
+            let term = tab.terminal.lock();
+            term.mode().contains(Mode::BRACKETED_PASTE)
+        };
+        let payload = if bracketed {
+            format!("\x1b[200~{text}\x1b[201~")
+        } else {
+            text
+        };
+        let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(payload.into_bytes())));
     }
 
     fn ensure_glyph(&mut self, ch: char) {
@@ -764,6 +799,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
             selecting: false,
+            clipboard: Clipboard::default(),
         };
         st.window.request_redraw();
         self.state = Some(st);
@@ -836,6 +872,8 @@ impl ApplicationHandler<UiEvent> for Uterm {
                         let c = s.to_lowercase();
                         if c == "t" { st.new_tab(); st.window.request_redraw(); return; }
                         else if c == "w" { st.close_active_tab(event_loop); st.window.request_redraw(); return; }
+                        else if c == "c" { st.copy_selection(); return; }
+                        else if c == "v" { st.paste_clipboard(); return; }
                     }
                     if matches!(k.logical_key, Key::Named(NamedKey::Tab)) { st.prev_tab(); st.window.request_redraw(); return; }
                 }
