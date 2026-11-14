@@ -11,7 +11,8 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - HiDPI-aware cell sizing and rendering with bundled **Cascadia Code NF**
 - Per-cell foreground/background color rendering (ANSI 16/256/truecolor, named/indexed palette resolution, inverse)
 - Basic keyboard input (text, arrows/home/end/page/delete, Ctrl/Alt combos)
-- Minimal tab support (one shell per tab), clickable tab bar
+- Minimal tab support (one shell per tab), clickable tab bar; tabs close when the shell exits (e.g. `Ctrl+D`) or via shortcut
+- Local mouse selection/highlight in the terminal area when mouse reporting is disabled by the application
 - Basic mouse reporting to the terminal (SGR/UTF-8 modes) for button, motion/drag, and wheel events when enabled by applications
 
 ### Tab keybindings
@@ -39,7 +40,7 @@ cargo run --release
 This is intentionally minimal:
 
 - Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
-- No selection/clipboard, IME, or xterm/kitty keyboard protocol
+- Local text selection/highlight only (no clipboard copy/paste integration), no IME, and no xterm/kitty keyboard protocol
 - No scrollback UI and no rendered graphics protocols
 - Simple static tab labels/bar (no OSC titles, no mouse tab reordering/close buttons)
 

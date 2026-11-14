@@ -3,11 +3,12 @@ use rio_vt::ansi::CursorShape;
 use rio_vt::config::colors::term::TermColors;
 use rio_vt::config::colors::{AnsiColor, NamedColor};
 use rio_vt::crosswords::grid::Dimensions;
-use rio_vt::crosswords::pos::Column;
+use rio_vt::crosswords::pos::{Column, Line, Pos, Side};
 use rio_vt::crosswords::{Crosswords, Mode};
 use rio_vt::event::sync::FairMutex;
 use rio_vt::event::{EventListener, Msg, RioEvent, WindowId, WindowSize};
 use rio_vt::performer::Machine;
+use rio_vt::selection::{Selection, SelectionRange, SelectionType};
 use softbuffer::{Context, Surface};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -26,6 +27,7 @@ const CASCADIA_TTF: &[u8] = include_bytes!("../CascadiaCodeNF.ttf");
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiEvent {
     Wakeup,
+    TabExited(usize),
 }
 
 #[derive(Clone)]
@@ -34,8 +36,15 @@ struct Listener {
 }
 
 impl EventListener for Listener {
-    fn send_event(&self, _event: RioEvent, _id: WindowId) {
-        let _ = self.proxy.send_event(UiEvent::Wakeup);
+    fn send_event(&self, event: RioEvent, _id: WindowId) {
+        match event {
+            RioEvent::CloseTerminal(route) | RioEvent::ChildExited(route, _) => {
+                let _ = self.proxy.send_event(UiEvent::TabExited(route));
+            }
+            _ => {
+                let _ = self.proxy.send_event(UiEvent::Wakeup);
+            }
+        }
     }
 }
 
@@ -64,18 +73,19 @@ struct PtyHandle {
 }
 
 struct Tab {
+    id: usize,
     terminal: Arc<FairMutex<Crosswords<Listener>>>,
     pty: PtyHandle,
 }
 
 impl Tab {
-    fn new(cols: usize, rows: usize, cell_w: usize, cell_h: usize, listener: Listener) -> Self {
+    fn new(id: usize, cols: usize, rows: usize, cell_w: usize, cell_h: usize, listener: Listener) -> Self {
         let terminal = Arc::new(FairMutex::new(Crosswords::new(
             TermSize { cols, rows, cell_w: cell_w as f32, cell_h: cell_h as f32 },
             CursorShape::Block,
             listener.clone(),
             WindowId::from(0),
-            0,
+            id,
             10_000,
         )));
         let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
@@ -90,10 +100,10 @@ impl Tab {
             (rows * cell_h) as u16,
         )
         .expect("create pty");
-        let machine = Machine::new(terminal.clone(), pty, listener, WindowId::from(0), 0).expect("machine");
+        let machine = Machine::new(terminal.clone(), pty, listener, WindowId::from(0), id).expect("machine");
         let channel = machine.channel();
         let thread = machine.spawn();
-        Tab { terminal, pty: PtyHandle { channel, _thread: thread } }
+        Tab { id, terminal, pty: PtyHandle { channel, _thread: thread } }
     }
 
     fn resize(&self, cols: usize, rows: usize, cell_w: usize, cell_h: usize) {
@@ -123,6 +133,7 @@ struct AppState {
     surface: Surface<Rc<Window>, Rc<Window>>,
     tabs: Vec<Tab>,
     active: usize,
+    next_tab_id: usize,
     font: Font,
     font_px: f32,
     cell_w: usize,
@@ -133,6 +144,7 @@ struct AppState {
     proxy: EventLoopProxy<UiEvent>,
     cursor_pos: (f64, f64),
     mouse_buttons: [bool; 3], // left, middle, right
+    selecting: bool,
 }
 
 impl AppState {
@@ -154,7 +166,9 @@ impl AppState {
     fn new_tab(&mut self) {
         let (cols, rows) = self.grid_dims();
         let listener = Listener { proxy: self.proxy.clone() };
-        self.tabs.push(Tab::new(cols, rows, self.cell_w, self.cell_h, listener));
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        self.tabs.push(Tab::new(id, cols, rows, self.cell_w, self.cell_h, listener));
         self.active = self.tabs.len() - 1;
     }
 
@@ -167,6 +181,22 @@ impl AppState {
         }
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
+        }
+    }
+
+    fn close_tab_by_id(&mut self, id: usize, event_loop: &ActiveEventLoop) {
+        if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
+            let was_active = idx == self.active;
+            self.tabs.remove(idx);
+            if self.tabs.is_empty() {
+                event_loop.exit();
+                return;
+            }
+            if was_active {
+                self.active = idx.min(self.tabs.len() - 1);
+            } else if idx < self.active {
+                self.active -= 1;
+            }
         }
     }
 
@@ -197,8 +227,7 @@ impl AppState {
             let _ = self.surface.resize(w, h);
         }
 
-        // Snapshot active tab with per-cell colors
-        let (cells, ncols, nrows, cursor_row, cursor_col, show_cursor, cursor_shape, default_bg, cur_u) = {
+        let (cells, ncols, nrows, cursor_row, cursor_col, show_cursor, cursor_shape, default_bg, cur_u, selection) = {
             let tab = &self.tabs[self.active];
             let mut term = tab.terminal.lock();
             let rows_vec: Vec<_> = term.visible_rows();
@@ -210,6 +239,7 @@ impl AppState {
             let default_fg = resolve_named(&term.colors, NamedColor::Foreground, 0xd8, 0xd8, 0xd8);
             let default_bg = resolve_named(&term.colors, NamedColor::Background, 0x10, 0x10, 0x10);
             let cur_u = resolve_named(&term.colors, NamedColor::Cursor, 0xf0, 0xf0, 0xf0);
+            let selection = term.selection.as_ref().and_then(|s| s.to_range(&term));
 
             let mut cells = Vec::with_capacity(nrows * ncols);
             for row in &rows_vec {
@@ -226,10 +256,9 @@ impl AppState {
             }
             term.reset_damage();
             term.damage_event_in_flight = false;
-            (cells, ncols, nrows, c.row.0, c.col.0, show, shape, default_bg, cur_u)
+            (cells, ncols, nrows, c.row.0, c.col.0, show, shape, default_bg, cur_u, selection)
         };
 
-        // Pre-cache glyphs for tab bar labels/hint and visible text
         let tab_labels: Vec<String> = (0..self.tabs.len())
             .map(|i| if i == self.active { format!("[{}:sh]", i + 1) } else { format!(" {}:sh ", i + 1) })
             .collect();
@@ -251,7 +280,6 @@ impl AppState {
         let bh = height as usize;
         let bar_h = self.cell_h.min(bh);
 
-        // Tab bar
         let bar_bg = rgb_u32(0x22, 0x22, 0x28);
         let bar_fg = rgb_u32(0xc0, 0xc0, 0xc8);
         let bar_active_bg = rgb_u32(0x3a, 0x5f, 0x8a);
@@ -301,9 +329,14 @@ impl AppState {
                 let px = c * self.cell_w;
                 if px >= bw { break; }
 
-                // Cell background
-                if cell.bg != default_bg {
-                    fill_rect(&mut buffer, bw, bh, px, py, self.cell_w, self.cell_h, cell.bg);
+                let mut fg = cell.fg;
+                let mut bg = cell.bg;
+                if is_selected(selection, r as i32, c) {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+
+                if bg != default_bg || is_selected(selection, r as i32, c) {
+                    fill_rect(&mut buffer, bw, bh, px, py, self.cell_w, self.cell_h, bg);
                 }
 
                 let ch = cell.ch;
@@ -311,7 +344,7 @@ impl AppState {
                     if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
                         let gx = px as i32 + metrics.xmin;
                         let gy = py as i32 + self.ascent as i32 - metrics.ymin - metrics.height as i32;
-                        blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, cell.fg);
+                        blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, fg);
                     }
                 }
 
@@ -346,54 +379,54 @@ impl AppState {
         None
     }
 
-    fn terminal_cell_at(&self, x: f64, y: f64) -> Option<(u16, u16)> {
+    fn terminal_cell_at(&self, x: f64, y: f64) -> Option<(usize, usize, Side)> {
         let bar_h = self.cell_h as f64;
         let ty = y - bar_h;
         if ty < 0.0 || x < 0.0 { return None; }
         let (cols, rows) = self.grid_dims();
-        let col = (x / self.cell_w as f64).floor() as i64;
-        let row = (ty / self.cell_h as f64).floor() as i64;
+        let col_f = x / self.cell_w as f64;
+        let row_f = ty / self.cell_h as f64;
+        let col = col_f.floor() as i64;
+        let row = row_f.floor() as i64;
         if col < 0 || row < 0 { return None; }
         let col = (col as usize).min(cols.saturating_sub(1));
         let row = (row as usize).min(rows.saturating_sub(1));
-        Some((col as u16, row as u16))
+        let side = if col_f - (col as f64) < 0.5 { Side::Left } else { Side::Right };
+        Some((col, row, side))
+    }
+
+    fn mouse_report_mode(&self) -> bool {
+        let Some(tab) = self.tabs.get(self.active) else { return false; };
+        let term = tab.terminal.lock();
+        term.mode().intersects(Mode::MOUSE_MODE)
     }
 
     fn send_mouse_report(&self, button: u8, col: u16, row: u16, pressed: bool) {
         let Some(tab) = self.tabs.get(self.active) else { return; };
-        let (sgr, utf8, mouse_mode, report_motion, report_drag) = {
+        let (sgr, utf8, mouse_mode) = {
             let term = tab.terminal.lock();
             let mode = term.mode();
-            let sgr = mode.contains(Mode::SGR_MOUSE);
-            let utf8 = mode.contains(Mode::UTF8_MOUSE);
-            let mouse_mode = mode.intersects(Mode::MOUSE_MODE);
-            let motion = mode.contains(Mode::MOUSE_MOTION);
-            let drag = mode.contains(Mode::MOUSE_DRAG);
-            (sgr, utf8, mouse_mode, motion, drag)
+            (mode.contains(Mode::SGR_MOUSE), mode.contains(Mode::UTF8_MOUSE), mode.intersects(Mode::MOUSE_MODE))
         };
-        if !mouse_mode && !(pressed || report_motion || report_drag) { return; }
+        if !mouse_mode { return; }
         let bytes = encode_mouse_report(button, col, row, pressed, sgr, utf8);
         let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
     }
 
     fn send_mouse_motion(&self, col: u16, row: u16) {
         let Some(tab) = self.tabs.get(self.active) else { return; };
-        let (sgr, utf8, any_button, report_motion, report_drag) = {
+        let (sgr, utf8, report_motion, report_drag) = {
             let term = tab.terminal.lock();
             let mode = term.mode();
-            let sgr = mode.contains(Mode::SGR_MOUSE);
-            let utf8 = mode.contains(Mode::UTF8_MOUSE);
-            let any = self.mouse_buttons.iter().any(|&b| b);
-            (sgr, utf8, any, mode.contains(Mode::MOUSE_MOTION), mode.contains(Mode::MOUSE_DRAG))
+            (mode.contains(Mode::SGR_MOUSE), mode.contains(Mode::UTF8_MOUSE), mode.contains(Mode::MOUSE_MOTION), mode.contains(Mode::MOUSE_DRAG))
         };
+        let any_button = self.mouse_buttons.iter().any(|&b| b);
         if !report_motion && !(report_drag && any_button) { return; }
         let mut base = if any_button {
-            // button drag: left/middle/right encoded as 32+button index
             if self.mouse_buttons[0] { 32 } else if self.mouse_buttons[1] { 33 } else { 34 }
         } else {
-            35 // no button motion
+            35
         };
-        // add motion bit
         base += 32;
         let bytes = encode_mouse_report(base, col, row, true, sgr, utf8);
         let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
@@ -404,66 +437,105 @@ impl AppState {
         if state == ElementState::Pressed && button == MouseButton::Left {
             if let Some(idx) = self.tab_bar_hit(x, y) {
                 self.active = idx;
+                self.selecting = false;
                 self.window.request_redraw();
                 return;
             }
         }
+
         let (btn_code, idx) = match button {
             MouseButton::Left => (0u8, 0usize),
             MouseButton::Middle => (1u8, 1usize),
             MouseButton::Right => (2u8, 2usize),
             _ => return,
         };
-        if state == ElementState::Pressed {
-            self.mouse_buttons[idx] = true;
-        } else {
-            self.mouse_buttons[idx] = false;
+
+        if self.mouse_report_mode() {
+            if state == ElementState::Pressed { self.mouse_buttons[idx] = true; } else { self.mouse_buttons[idx] = false; }
+            if let Some((col, row, _)) = self.terminal_cell_at(x, y) {
+                self.send_mouse_report(btn_code, col as u16, row as u16, state == ElementState::Pressed);
+            }
+            self.selecting = false;
+            return;
         }
-        if let Some((col, row)) = self.terminal_cell_at(x, y) {
-            self.send_mouse_report(btn_code, col, row, state == ElementState::Pressed);
+
+        // Local selection handling (no mouse reporting)
+        match (button, state) {
+            (MouseButton::Left, ElementState::Pressed) => {
+                self.mouse_buttons[0] = true;
+                if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        let mut term = tab.terminal.lock();
+                        let point = Pos::new(Line(row as i32), Column(col));
+                        let ty = if self.modifiers.state().shift_key() { SelectionType::Simple } else { SelectionType::Simple };
+                        term.selection = Some(Selection::new(ty, point, side));
+                    }
+                    self.selecting = true;
+                }
+            }
+            (MouseButton::Left, ElementState::Released) => {
+                self.mouse_buttons[0] = false;
+                if self.selecting {
+                    if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
+                        if let Some(tab) = self.tabs.get(self.active) {
+                            let mut term = tab.terminal.lock();
+                            if let Some(sel) = &mut term.selection {
+                                sel.update(Pos::new(Line(row as i32), Column(col)), side);
+                            }
+                        }
+                    }
+                }
+                self.selecting = false;
+            }
+            (_, ElementState::Pressed) => {
+                self.mouse_buttons[idx] = true;
+            }
+            (_, ElementState::Released) => {
+                self.mouse_buttons[idx] = false;
+            }
         }
+        self.window.request_redraw();
         let _ = event_loop;
     }
 }
 
-fn resolve_named(colors: &TermColors, name: NamedColor, dr: u8, dg: u8, db: u8) -> u32 {
-    if let Some(a) = &colors[name] {
-        arr_to_u32(*a)
+fn is_selected(selection: Option<SelectionRange>, row: i32, col: usize) -> bool {
+    let Some(sel) = selection else { return false; };
+    if sel.is_block {
+        let c0 = sel.start.col.0.min(sel.end.col.0);
+        let c1 = sel.start.col.0.max(sel.end.col.0);
+        row >= sel.start.row.0 && row <= sel.end.row.0 && col >= c0 && col <= c1
     } else {
-        rgb_u32(dr, dg, db)
+        if row < sel.start.row.0 || row > sel.end.row.0 { return false; }
+        if sel.start.row.0 == sel.end.row.0 {
+            col >= sel.start.col.0 && col <= sel.end.col.0
+        } else if row == sel.start.row.0 {
+            col >= sel.start.col.0
+        } else if row == sel.end.row.0 {
+            col <= sel.end.col.0
+        } else {
+            true
+        }
     }
+}
+
+fn resolve_named(colors: &TermColors, name: NamedColor, dr: u8, dg: u8, db: u8) -> u32 {
+    if let Some(a) = &colors[name] { arr_to_u32(*a) } else { rgb_u32(dr, dg, db) }
 }
 
 fn indexed_color(idx: u8) -> (u8, u8, u8) {
     match idx {
-        0 => (0x00, 0x00, 0x00),
-        1 => (0xcd, 0x00, 0x00),
-        2 => (0x00, 0xcd, 0x00),
-        3 => (0xcd, 0xcd, 0x00),
-        4 => (0x00, 0x00, 0xee),
-        5 => (0xcd, 0x00, 0xcd),
-        6 => (0x00, 0xcd, 0xcd),
-        7 => (0xe5, 0xe5, 0xe5),
-        8 => (0x7f, 0x7f, 0x7f),
-        9 => (0xff, 0x00, 0x00),
-        10 => (0x00, 0xff, 0x00),
-        11 => (0xff, 0xff, 0x00),
-        12 => (0x5c, 0x5c, 0xff),
-        13 => (0xff, 0x00, 0xff),
-        14 => (0x00, 0xff, 0xff),
-        15 => (0xff, 0xff, 0xff),
+        0 => (0x00, 0x00, 0x00), 1 => (0xcd, 0x00, 0x00), 2 => (0x00, 0xcd, 0x00), 3 => (0xcd, 0xcd, 0x00),
+        4 => (0x00, 0x00, 0xee), 5 => (0xcd, 0x00, 0xcd), 6 => (0x00, 0xcd, 0xcd), 7 => (0xe5, 0xe5, 0xe5),
+        8 => (0x7f, 0x7f, 0x7f), 9 => (0xff, 0x00, 0x00), 10 => (0x00, 0xff, 0x00), 11 => (0xff, 0xff, 0x00),
+        12 => (0x5c, 0x5c, 0xff), 13 => (0xff, 0x00, 0xff), 14 => (0x00, 0xff, 0xff), 15 => (0xff, 0xff, 0xff),
         16..=231 => {
             let i = idx - 16;
-            let r = i / 36;
-            let g = (i / 6) % 6;
-            let b = i % 6;
+            let r = i / 36; let g = (i / 6) % 6; let b = i % 6;
             let cv = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
             (cv(r), cv(g), cv(b))
         }
-        232..=255 => {
-            let v = 8 + 10 * (idx - 232);
-            (v, v, v)
-        }
+        232..=255 => { let v = 8 + 10 * (idx - 232); (v, v, v) }
     }
 }
 
@@ -478,38 +550,34 @@ fn resolve_ansi_color(color: AnsiColor, colors: &TermColors, _default: u32) -> u
                 rgb_u32(r, g, b)
             }
         }
-        AnsiColor::Named(n) => {
-            match n {
-                NamedColor::Foreground | NamedColor::LightForeground | NamedColor::DimForeground => {
-                    resolve_named(colors, NamedColor::Foreground, 0xd8, 0xd8, 0xd8)
-                }
-                NamedColor::Background => resolve_named(colors, NamedColor::Background, 0x10, 0x10, 0x10),
-                NamedColor::Cursor => resolve_named(colors, NamedColor::Cursor, 0xf0, 0xf0, 0xf0),
-                NamedColor::Black => colors[NamedColor::Black].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0,0)),
-                NamedColor::Red => colors[NamedColor::Red].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xcd,0,0)),
-                NamedColor::Green => colors[NamedColor::Green].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0xcd,0)),
-                NamedColor::Yellow => colors[NamedColor::Yellow].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xcd,0xcd,0)),
-                NamedColor::Blue => colors[NamedColor::Blue].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0,0xee)),
-                NamedColor::Magenta => colors[NamedColor::Magenta].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xcd,0,0xcd)),
-                NamedColor::Cyan => colors[NamedColor::Cyan].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0xcd,0xcd)),
-                NamedColor::White => colors[NamedColor::White].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xe5,0xe5,0xe5)),
-                NamedColor::LightBlack => colors[NamedColor::LightBlack].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x7f,0x7f,0x7f)),
-                NamedColor::LightRed => colors[NamedColor::LightRed].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xff,0,0)),
-                NamedColor::LightGreen => colors[NamedColor::LightGreen].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0xff,0)),
-                NamedColor::LightYellow => colors[NamedColor::LightYellow].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xff,0xff,0)),
-                NamedColor::LightBlue => colors[NamedColor::LightBlue].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x5c,0x5c,0xff)),
-                NamedColor::LightMagenta => colors[NamedColor::LightMagenta].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xff,0,0xff)),
-                NamedColor::LightCyan => colors[NamedColor::LightCyan].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0xff,0xff)),
-                NamedColor::LightWhite => colors[NamedColor::LightWhite].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xff,0xff,0xff)),
-                NamedColor::DimBlack => colors[NamedColor::DimBlack].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0,0)),
-                NamedColor::DimRed => colors[NamedColor::DimRed].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x88,0,0)),
-                NamedColor::DimGreen => colors[NamedColor::DimGreen].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0x88,0)),
-                NamedColor::DimYellow => colors[NamedColor::DimYellow].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x88,0x88,0)),
-                NamedColor::DimBlue => colors[NamedColor::DimBlue].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0,0x88)),
-                NamedColor::DimMagenta => colors[NamedColor::DimMagenta].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x88,0,0x88)),
-                NamedColor::DimCyan => colors[NamedColor::DimCyan].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0x88,0x88)),
-                NamedColor::DimWhite => colors[NamedColor::DimWhite].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x99,0x99,0x99)),
-            }
+        AnsiColor::Named(n) => match n {
+            NamedColor::Foreground | NamedColor::LightForeground | NamedColor::DimForeground => resolve_named(colors, NamedColor::Foreground, 0xd8, 0xd8, 0xd8),
+            NamedColor::Background => resolve_named(colors, NamedColor::Background, 0x10, 0x10, 0x10),
+            NamedColor::Cursor => resolve_named(colors, NamedColor::Cursor, 0xf0, 0xf0, 0xf0),
+            NamedColor::Black => colors[NamedColor::Black].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0,0)),
+            NamedColor::Red => colors[NamedColor::Red].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xcd,0,0)),
+            NamedColor::Green => colors[NamedColor::Green].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0xcd,0)),
+            NamedColor::Yellow => colors[NamedColor::Yellow].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xcd,0xcd,0)),
+            NamedColor::Blue => colors[NamedColor::Blue].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0,0xee)),
+            NamedColor::Magenta => colors[NamedColor::Magenta].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xcd,0,0xcd)),
+            NamedColor::Cyan => colors[NamedColor::Cyan].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0xcd,0xcd)),
+            NamedColor::White => colors[NamedColor::White].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xe5,0xe5,0xe5)),
+            NamedColor::LightBlack => colors[NamedColor::LightBlack].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x7f,0x7f,0x7f)),
+            NamedColor::LightRed => colors[NamedColor::LightRed].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xff,0,0)),
+            NamedColor::LightGreen => colors[NamedColor::LightGreen].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0xff,0)),
+            NamedColor::LightYellow => colors[NamedColor::LightYellow].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xff,0xff,0)),
+            NamedColor::LightBlue => colors[NamedColor::LightBlue].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x5c,0x5c,0xff)),
+            NamedColor::LightMagenta => colors[NamedColor::LightMagenta].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xff,0,0xff)),
+            NamedColor::LightCyan => colors[NamedColor::LightCyan].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0xff,0xff)),
+            NamedColor::LightWhite => colors[NamedColor::LightWhite].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0xff,0xff,0xff)),
+            NamedColor::DimBlack => colors[NamedColor::DimBlack].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0,0)),
+            NamedColor::DimRed => colors[NamedColor::DimRed].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x88,0,0)),
+            NamedColor::DimGreen => colors[NamedColor::DimGreen].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0x88,0)),
+            NamedColor::DimYellow => colors[NamedColor::DimYellow].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x88,0x88,0)),
+            NamedColor::DimBlue => colors[NamedColor::DimBlue].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0,0x88)),
+            NamedColor::DimMagenta => colors[NamedColor::DimMagenta].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x88,0,0x88)),
+            NamedColor::DimCyan => colors[NamedColor::DimCyan].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0,0x88,0x88)),
+            NamedColor::DimWhite => colors[NamedColor::DimWhite].as_ref().copied().map(arr_to_u32).unwrap_or(rgb_u32(0x99,0x99,0x99)),
         }
     }
 }
@@ -539,17 +607,9 @@ fn ctrl_char(ch: char) -> Option<u8> {
     match ch {
         'a'..='z' => Some((ch as u8) - b'a' + 1),
         'A'..='Z' => Some((ch as u8) - b'A' + 1),
-        '@' => Some(0),
-        '[' => Some(0x1b),
-        '\\' => Some(0x1c),
-        ']' => Some(0x1d),
-        '^' | '~' => Some(0x1e),
-        '_' => Some(0x1f),
-        ' ' => Some(0),
-        '?' => Some(0x7f),
-        '2' => Some(0),
-        '3'..='7' => Some((ch as u8) - b'0' + 0x1b),
-        '/' => Some(0x1f),
+        '@' => Some(0), '[' => Some(0x1b), '\\' => Some(0x1c), ']' => Some(0x1d),
+        '^' | '~' => Some(0x1e), '_' => Some(0x1f), ' ' => Some(0), '?' => Some(0x7f),
+        '2' => Some(0), '3'..='7' => Some((ch as u8) - b'0' + 0x1b), '/' => Some(0x1f),
         _ => None,
     }
 }
@@ -557,7 +617,6 @@ fn ctrl_char(ch: char) -> Option<u8> {
 fn key_to_bytes(k: &winit::event::KeyEvent, modifiers: Modifiers) -> Option<Vec<u8>> {
     let ctrl = modifiers.state().control_key();
     let alt = modifiers.state().alt_key();
-
     if ctrl {
         if let Key::Character(s) = &k.logical_key {
             if let Some(ch) = s.chars().next() {
@@ -569,35 +628,21 @@ fn key_to_bytes(k: &winit::event::KeyEvent, modifiers: Modifiers) -> Option<Vec<
             }
         }
     }
-
     match &k.logical_key {
         Key::Character(s) => {
             if !ctrl && !alt {
-                if let Some(text) = &k.text {
-                    if !text.is_empty() { return Some(text.as_bytes().to_vec()); }
-                }
+                if let Some(text) = &k.text { if !text.is_empty() { return Some(text.as_bytes().to_vec()); } }
             }
             if ctrl { return None; }
-            let b = if let Some(text) = &k.text {
-                if !text.is_empty() { text.as_bytes().to_vec() } else { s.as_bytes().to_vec() }
-            } else { s.as_bytes().to_vec() };
+            let b = if let Some(text) = &k.text { if !text.is_empty() { text.as_bytes().to_vec() } else { s.as_bytes().to_vec() } } else { s.as_bytes().to_vec() };
             if b.is_empty() { return None; }
-            if alt {
-                let mut out = vec![0x1b];
-                out.extend_from_slice(&b);
-                Some(out)
-            } else { Some(b) }
+            if alt { let mut out = vec![0x1b]; out.extend_from_slice(&b); Some(out) } else { Some(b) }
         }
         Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
         Key::Named(NamedKey::Backspace) => Some(if ctrl { vec![0x08] } else { vec![0x7f] }),
         Key::Named(NamedKey::Tab) => Some(b"\t".to_vec()),
         Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
-        Key::Named(NamedKey::Space) => {
-            if ctrl { Some(vec![0]) }
-            else if alt { Some(b"\x1b ".to_vec()) }
-            else if let Some(text) = &k.text { Some(text.as_bytes().to_vec()) }
-            else { Some(b" ".to_vec()) }
-        }
+        Key::Named(NamedKey::Space) => if ctrl { Some(vec![0]) } else if alt { Some(b"\x1b ".to_vec()) } else if let Some(text) = &k.text { Some(text.as_bytes().to_vec()) } else { Some(b" ".to_vec()) },
         Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
         Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
         Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
@@ -700,13 +745,14 @@ impl ApplicationHandler<UiEvent> for Uterm {
         let rows = total_rows.saturating_sub(1).max(1);
 
         let listener = Listener { proxy: self.proxy.clone() };
-        let first = Tab::new(cols, rows, cell_w, cell_h, listener);
+        let first = Tab::new(0, cols, rows, cell_w, cell_h, listener);
 
         let st = AppState {
             window,
             surface,
             tabs: vec![first],
             active: 0,
+            next_tab_id: 1,
             font,
             font_px,
             cell_w,
@@ -717,13 +763,21 @@ impl ApplicationHandler<UiEvent> for Uterm {
             proxy: self.proxy.clone(),
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
+            selecting: false,
         };
         st.window.request_redraw();
         self.state = Some(st);
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: UiEvent) {
-        if let Some(st) = &self.state { st.window.request_redraw(); }
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
+        let Some(st) = &mut self.state else { return; };
+        match event {
+            UiEvent::Wakeup => st.window.request_redraw(),
+            UiEvent::TabExited(id) => {
+                st.close_tab_by_id(id, event_loop);
+                st.window.request_redraw();
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WinitWindowId, event: WindowEvent) {
@@ -735,15 +789,27 @@ impl ApplicationHandler<UiEvent> for Uterm {
             WindowEvent::ModifiersChanged(m) => { st.modifiers = m; }
             WindowEvent::CursorMoved { position, .. } => {
                 st.cursor_pos = (position.x, position.y);
-                if let Some((col, row)) = st.terminal_cell_at(position.x, position.y) {
-                    st.send_mouse_motion(col, row);
+                if st.mouse_report_mode() {
+                    if let Some((col, row, _)) = st.terminal_cell_at(position.x, position.y) {
+                        st.send_mouse_motion(col as u16, row as u16);
+                    }
+                } else if st.selecting && st.mouse_buttons[0] {
+                    if let Some((col, row, side)) = st.terminal_cell_at(position.x, position.y) {
+                        if let Some(tab) = st.tabs.get(st.active) {
+                            let mut term = tab.terminal.lock();
+                            if let Some(sel) = &mut term.selection {
+                                sel.update(Pos::new(Line(row as i32), Column(col)), side);
+                            }
+                        }
+                        st.window.request_redraw();
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 st.handle_mouse_press(button, state, event_loop);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if let Some((col, row)) = st.terminal_cell_at(st.cursor_pos.0, st.cursor_pos.1) {
+                if let Some((col, row, _)) = st.terminal_cell_at(st.cursor_pos.0, st.cursor_pos.1) {
                     let lines = match delta {
                         MouseScrollDelta::LineDelta(_, y) => y as i32,
                         MouseScrollDelta::PixelDelta(pos) => {
@@ -751,11 +817,10 @@ impl ApplicationHandler<UiEvent> for Uterm {
                         }
                     };
                     if lines != 0 {
-                        // Wheel up (positive in winit LineDelta usually means up scroll?) -> button 64, down 65 in SGR
                         let (btn, count) = if lines > 0 { (64u8, lines) } else { (65u8, -lines) };
                         for _ in 0..count.min(10) {
-                            st.send_mouse_report(btn, col, row, true);
-                            st.send_mouse_report(btn, col, row, false);
+                            st.send_mouse_report(btn, col as u16, row as u16, true);
+                            st.send_mouse_report(btn, col as u16, row as u16, false);
                         }
                     }
                 }
@@ -769,38 +834,15 @@ impl ApplicationHandler<UiEvent> for Uterm {
                 if ctrl && shift {
                     if let Key::Character(s) = &k.logical_key {
                         let c = s.to_lowercase();
-                        if c == "t" {
-                            st.new_tab();
-                            st.window.request_redraw();
-                            return;
-                        } else if c == "w" {
-                            st.close_active_tab(event_loop);
-                            st.window.request_redraw();
-                            return;
-                        }
+                        if c == "t" { st.new_tab(); st.window.request_redraw(); return; }
+                        else if c == "w" { st.close_active_tab(event_loop); st.window.request_redraw(); return; }
                     }
-                    if matches!(k.logical_key, Key::Named(NamedKey::Tab)) {
-                        st.prev_tab();
-                        st.window.request_redraw();
-                        return;
-                    }
+                    if matches!(k.logical_key, Key::Named(NamedKey::Tab)) { st.prev_tab(); st.window.request_redraw(); return; }
                 }
                 if ctrl {
-                    if matches!(k.logical_key, Key::Named(NamedKey::Tab)) && !shift {
-                        st.next_tab();
-                        st.window.request_redraw();
-                        return;
-                    }
-                    if matches!(k.logical_key, Key::Named(NamedKey::PageDown)) {
-                        st.next_tab();
-                        st.window.request_redraw();
-                        return;
-                    }
-                    if matches!(k.logical_key, Key::Named(NamedKey::PageUp)) {
-                        st.prev_tab();
-                        st.window.request_redraw();
-                        return;
-                    }
+                    if matches!(k.logical_key, Key::Named(NamedKey::Tab)) && !shift { st.next_tab(); st.window.request_redraw(); return; }
+                    if matches!(k.logical_key, Key::Named(NamedKey::PageDown)) { st.next_tab(); st.window.request_redraw(); return; }
+                    if matches!(k.logical_key, Key::Named(NamedKey::PageUp)) { st.prev_tab(); st.window.request_redraw(); return; }
                 }
 
                 if let Some(bytes) = key_to_bytes(&k, st.modifiers) {
