@@ -146,6 +146,12 @@ struct CellRender {
     bg: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalPointerState {
+    Idle,
+    Selecting,
+}
+
 struct AppState {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
@@ -162,7 +168,7 @@ struct AppState {
     proxy: EventLoopProxy<UiEvent>,
     cursor_pos: (f64, f64),
     mouse_buttons: [bool; 3], // left, middle, right
-    selecting: bool,
+    local_pointer: LocalPointerState,
     clipboard: Clipboard,
 }
 
@@ -182,6 +188,41 @@ impl AppState {
         }
     }
 
+    fn clamp_active(&mut self) {
+        if self.tabs.is_empty() {
+            self.active = 0;
+        } else if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
+        }
+    }
+
+    fn select_tab(&mut self, idx: usize) {
+        if idx < self.tabs.len() {
+            self.active = idx;
+            self.sync_window_title();
+        }
+    }
+
+    fn remove_tab_index(&mut self, idx: usize, event_loop: &ActiveEventLoop) {
+        if idx >= self.tabs.len() { return; }
+        let was_active = idx == self.active;
+        self.tabs.remove(idx);
+        if self.tabs.is_empty() {
+            self.active = 0;
+            self.local_pointer = LocalPointerState::Idle;
+            event_loop.exit();
+            self.window.set_title("uterm");
+            return;
+        }
+        if was_active {
+            self.active = idx.min(self.tabs.len() - 1);
+        } else if idx < self.active {
+            self.active = self.active.saturating_sub(1);
+        }
+        self.clamp_active();
+        self.sync_window_title();
+    }
+
     fn new_tab(&mut self) {
         let (cols, rows) = self.grid_dims();
         let listener = Listener { proxy: self.proxy.clone() };
@@ -194,7 +235,11 @@ impl AppState {
 
     fn sync_window_title(&self) {
         if let Some(tab) = self.tabs.get(self.active) {
-            let title = if tab.title.trim().is_empty() { "uterm".to_string() } else { format!("{} — uterm", tab.title.trim()) };
+            let title = if tab.title.trim().is_empty() {
+                "uterm".to_string()
+            } else {
+                format!("{} — uterm", tab.title.trim())
+            };
             self.window.set_title(&title);
         } else {
             self.window.set_title("uterm");
@@ -203,57 +248,19 @@ impl AppState {
 
     fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
         if self.tabs.is_empty() { return; }
-        self.active = self.active.min(self.tabs.len() - 1);
-        self.tabs.remove(self.active);
-        if self.tabs.is_empty() {
-            self.active = 0;
-            event_loop.exit();
-            self.window.set_title("uterm");
-            return;
-        }
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len() - 1;
-        }
-        self.sync_window_title();
+        self.clamp_active();
+        let idx = self.active;
+        self.remove_tab_index(idx, event_loop);
     }
 
     fn close_tab_by_id(&mut self, id: usize, event_loop: &ActiveEventLoop) {
         if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
-            let was_active = idx == self.active;
-            self.tabs.remove(idx);
-            if self.tabs.is_empty() {
-                self.active = 0;
-                event_loop.exit();
-                self.window.set_title("uterm");
-                return;
-            }
-            if was_active {
-                self.active = idx.min(self.tabs.len() - 1);
-            } else if idx < self.active {
-                self.active = self.active.saturating_sub(1);
-            }
-            if self.active >= self.tabs.len() { self.active = self.tabs.len() - 1; }
-            self.sync_window_title();
+            self.remove_tab_index(idx, event_loop);
         }
     }
 
     fn close_tab_at(&mut self, idx: usize, event_loop: &ActiveEventLoop) {
-        if idx >= self.tabs.len() { return; }
-        let was_active = idx == self.active;
-        self.tabs.remove(idx);
-        if self.tabs.is_empty() {
-            self.active = 0;
-            event_loop.exit();
-            self.window.set_title("uterm");
-            return;
-        }
-        if was_active {
-            self.active = idx.min(self.tabs.len() - 1);
-        } else if idx < self.active {
-            self.active = self.active.saturating_sub(1);
-        }
-        if self.active >= self.tabs.len() { self.active = self.tabs.len() - 1; }
-        self.sync_window_title();
+        self.remove_tab_index(idx, event_loop);
     }
 
     fn next_tab(&mut self) {
@@ -346,7 +353,7 @@ impl AppState {
 
     fn render(&mut self) {
         if self.tabs.is_empty() { return; }
-        if self.active >= self.tabs.len() { self.active = self.tabs.len() - 1; }
+        self.clamp_active();
         let size = self.window.inner_size();
         let (width, height) = (size.width, size.height);
         if width == 0 || height == 0 { return; }
@@ -602,10 +609,9 @@ impl AppState {
                 if close {
                     self.close_tab_at(idx, event_loop);
                 } else {
-                    self.active = idx;
-                    self.sync_window_title();
+                    self.select_tab(idx);
                 }
-                self.selecting = false;
+                self.local_pointer = LocalPointerState::Idle;
                 self.window.request_redraw();
                 return;
             }
@@ -619,42 +625,26 @@ impl AppState {
         };
 
         if self.mouse_report_mode() {
-            if state == ElementState::Pressed { self.mouse_buttons[idx] = true; } else { self.mouse_buttons[idx] = false; }
+            self.local_pointer = LocalPointerState::Idle;
+            if state == ElementState::Pressed {
+                self.mouse_buttons[idx] = true;
+            } else {
+                self.mouse_buttons[idx] = false;
+            }
             if let Some((col, row, _)) = self.terminal_cell_at(x, y) {
                 self.send_mouse_report(btn_code, col as u16, row as u16, state == ElementState::Pressed);
             }
-            self.selecting = false;
             return;
         }
 
-        // Local selection handling (no mouse reporting)
         match (button, state) {
             (MouseButton::Left, ElementState::Pressed) => {
                 self.mouse_buttons[0] = true;
-                if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
-                    if let Some(tab) = self.tabs.get(self.active) {
-                        let mut term = tab.terminal.lock();
-                        let point = Pos::new(Line(row as i32), Column(col));
-                        let ty = SelectionType::Simple;
-                        term.selection = Some(Selection::new(ty, point, side));
-                    }
-                    self.selecting = true;
-                }
+                self.begin_local_selection(x, y);
             }
             (MouseButton::Left, ElementState::Released) => {
                 self.mouse_buttons[0] = false;
-                if self.selecting {
-                    if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
-                        if let Some(tab) = self.tabs.get(self.active) {
-                            let mut term = tab.terminal.lock();
-                            if let Some(sel) = &mut term.selection {
-                                sel.update(Pos::new(Line(row as i32), Column(col)), side);
-                            }
-                        }
-                    }
-                    self.update_primary_selection();
-                }
-                self.selecting = false;
+                self.finish_local_selection(x, y);
             }
             (MouseButton::Middle, ElementState::Pressed) => {
                 self.mouse_buttons[1] = true;
@@ -674,6 +664,47 @@ impl AppState {
         }
         self.window.request_redraw();
         let _ = event_loop;
+    }
+
+    fn begin_local_selection(&mut self, x: f64, y: f64) {
+        self.local_pointer = LocalPointerState::Idle;
+        if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
+            if let Some(tab) = self.tabs.get(self.active) {
+                let mut term = tab.terminal.lock();
+                let point = Pos::new(Line(row as i32), Column(col));
+                term.selection = Some(Selection::new(SelectionType::Simple, point, side));
+            }
+            self.local_pointer = LocalPointerState::Selecting;
+        }
+    }
+
+    fn update_local_selection(&mut self, x: f64, y: f64) {
+        if self.local_pointer != LocalPointerState::Selecting || !self.mouse_buttons[0] {
+            return;
+        }
+        if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
+            if let Some(tab) = self.tabs.get(self.active) {
+                let mut term = tab.terminal.lock();
+                if let Some(sel) = &mut term.selection {
+                    sel.update(Pos::new(Line(row as i32), Column(col)), side);
+                }
+            }
+        }
+    }
+
+    fn finish_local_selection(&mut self, x: f64, y: f64) {
+        if self.local_pointer == LocalPointerState::Selecting {
+            if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
+                if let Some(tab) = self.tabs.get(self.active) {
+                    let mut term = tab.terminal.lock();
+                    if let Some(sel) = &mut term.selection {
+                        sel.update(Pos::new(Line(row as i32), Column(col)), side);
+                    }
+                }
+            }
+            self.update_primary_selection();
+        }
+        self.local_pointer = LocalPointerState::Idle;
     }
 }
 
@@ -949,7 +980,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
             proxy: self.proxy.clone(),
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
-            selecting: false,
+            local_pointer: LocalPointerState::Idle,
             clipboard,
         };
         st.sync_window_title();
@@ -992,19 +1023,13 @@ impl ApplicationHandler<UiEvent> for Uterm {
             WindowEvent::CursorMoved { position, .. } => {
                 st.cursor_pos = (position.x, position.y);
                 if st.mouse_report_mode() {
+                    st.local_pointer = LocalPointerState::Idle;
                     if let Some((col, row, _)) = st.terminal_cell_at(position.x, position.y) {
                         st.send_mouse_motion(col as u16, row as u16);
                     }
-                } else if st.selecting && st.mouse_buttons[0] {
-                    if let Some((col, row, side)) = st.terminal_cell_at(position.x, position.y) {
-                        if let Some(tab) = st.tabs.get(st.active) {
-                            let mut term = tab.terminal.lock();
-                            if let Some(sel) = &mut term.selection {
-                                sel.update(Pos::new(Line(row as i32), Column(col)), side);
-                            }
-                        }
-                        st.window.request_redraw();
-                    }
+                } else if st.local_pointer == LocalPointerState::Selecting && st.mouse_buttons[0] {
+                    st.update_local_selection(position.x, position.y);
+                    st.window.request_redraw();
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
