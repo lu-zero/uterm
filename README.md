@@ -11,7 +11,8 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - HiDPI-aware cell sizing and rendering with bundled **Cascadia Code NF**
 - Per-cell foreground/background color rendering (ANSI 16/256/truecolor, named/indexed palette resolution, inverse)
 - Basic keyboard input (text, arrows/home/end/page/delete, Ctrl/Alt combos)
-- Minimal tab support (one shell per tab), clickable tab bar; tabs close when the shell exits (e.g. `Ctrl+D`) or via shortcut
+- Minimal tab support (one shell per tab) with a styled tab bar showing per-tab titles (OSC/title updates), clickable tabs, and per-tab close buttons; tabs also close when the shell exits (e.g. `Ctrl+D`) or via shortcut
+- Window title follows the active tab title
 - Local mouse selection/highlight in the terminal area when mouse reporting is disabled by the application
 - Basic copy/paste integration for local selection and clipboard (`Ctrl+Shift+C` to copy selection, `Ctrl+Shift+V` to paste; bracketed paste used when enabled by the shell/app)
 - Basic mouse reporting to the terminal (SGR/UTF-8 modes) for button, motion/drag, and wheel events when enabled by applications
@@ -24,7 +25,8 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - **Ctrl+Shift+Tab** / **Ctrl+PageUp**: previous tab
 - **Ctrl+Shift+C**: copy current selection to clipboard
 - **Ctrl+Shift+V**: paste clipboard into terminal
-- **Mouse click on tab bar**: switch tab
+- **Mouse click on tab**: switch tab
+- **Mouse click on tab close (×)**: close tab
 
 ## Building and running
 
@@ -45,7 +47,7 @@ This is intentionally minimal:
 - Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
 - Basic local selection copy/paste via shortcuts; no OSC 52 clipboard handling, IME, or xterm/kitty keyboard protocol
 - No scrollback UI and no rendered graphics protocols
-- Simple static tab labels/bar (no OSC titles, no mouse tab reordering/close buttons)
+- Simple tab bar UI (titles and close buttons supported, but no tab reordering, dragging, or advanced widgets)
 
 ## License
 

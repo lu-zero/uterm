@@ -25,10 +25,11 @@ use winit::window::{Window, WindowId as WinitWindowId};
 
 const CASCADIA_TTF: &[u8] = include_bytes!("../CascadiaCodeNF.ttf");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum UiEvent {
     Wakeup,
     TabExited(usize),
+    TitleChanged(usize, String),
 }
 
 #[derive(Clone)]
@@ -41,6 +42,17 @@ impl EventListener for Listener {
         match event {
             RioEvent::CloseTerminal(route) | RioEvent::ChildExited(route, _) => {
                 let _ = self.proxy.send_event(UiEvent::TabExited(route));
+            }
+            RioEvent::Title(route, title) => {
+                let _ = self.proxy.send_event(UiEvent::TitleChanged(route, title));
+            }
+            RioEvent::ResetTitle => {
+                // no route info; reset active tab best-effort by routing later is not possible here,
+                // but we can wake up; better to use route 0 is wrong. Instead store via special id usize::MAX? not ideal.
+                let _ = self.proxy.send_event(UiEvent::Wakeup);
+            }
+            RioEvent::SyncWindowTitle => {
+                let _ = self.proxy.send_event(UiEvent::Wakeup);
             }
             _ => {
                 let _ = self.proxy.send_event(UiEvent::Wakeup);
@@ -75,6 +87,7 @@ struct PtyHandle {
 
 struct Tab {
     id: usize,
+    title: String,
     terminal: Arc<FairMutex<Crosswords<Listener>>>,
     pty: PtyHandle,
 }
@@ -104,7 +117,7 @@ impl Tab {
         let machine = Machine::new(terminal.clone(), pty, listener, WindowId::from(0), id).expect("machine");
         let channel = machine.channel();
         let thread = machine.spawn();
-        Tab { id, terminal, pty: PtyHandle { channel, _thread: thread } }
+        Tab { id, title: "shell".to_string(), terminal, pty: PtyHandle { channel, _thread: thread } }
     }
 
     fn resize(&self, cols: usize, rows: usize, cell_w: usize, cell_h: usize) {
@@ -172,6 +185,16 @@ impl AppState {
         self.next_tab_id += 1;
         self.tabs.push(Tab::new(id, cols, rows, self.cell_w, self.cell_h, listener));
         self.active = self.tabs.len() - 1;
+        self.sync_window_title();
+    }
+
+    fn sync_window_title(&self) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            let title = if tab.title.trim().is_empty() { "uterm".to_string() } else { format!("{} — uterm", tab.title.trim()) };
+            self.window.set_title(&title);
+        } else {
+            self.window.set_title("uterm");
+        }
     }
 
     fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
@@ -184,6 +207,7 @@ impl AppState {
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
         }
+        self.sync_window_title();
     }
 
     fn close_tab_by_id(&mut self, id: usize, event_loop: &ActiveEventLoop) {
@@ -199,19 +223,53 @@ impl AppState {
             } else if idx < self.active {
                 self.active -= 1;
             }
+            self.sync_window_title();
         }
+    }
+
+    fn close_tab_at(&mut self, idx: usize, event_loop: &ActiveEventLoop) {
+        if idx >= self.tabs.len() { return; }
+        let was_active = idx == self.active;
+        self.tabs.remove(idx);
+        if self.tabs.is_empty() {
+            event_loop.exit();
+            return;
+        }
+        if was_active {
+            self.active = idx.min(self.tabs.len() - 1);
+        } else if idx < self.active {
+            self.active -= 1;
+        }
+        self.sync_window_title();
     }
 
     fn next_tab(&mut self) {
         if !self.tabs.is_empty() {
             self.active = (self.active + 1) % self.tabs.len();
+            self.sync_window_title();
         }
     }
 
     fn prev_tab(&mut self) {
         if !self.tabs.is_empty() {
             self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
+            self.sync_window_title();
         }
+    }
+
+    fn set_tab_title(&mut self, id: usize, title: String) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+            let t = title.trim().to_string();
+            tab.title = if t.is_empty() { "shell".to_string() } else { t };
+        }
+        self.sync_window_title();
+    }
+
+    fn _reset_tab_title(&mut self, id: usize) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+            tab.title = "shell".to_string();
+        }
+        self.sync_window_title();
     }
 
     fn copy_selection(&mut self) {
@@ -294,13 +352,12 @@ impl AppState {
             (cells, ncols, nrows, c.row.0, c.col.0, show, shape, default_bg, cur_u, selection)
         };
 
-        let tab_labels: Vec<String> = (0..self.tabs.len())
-            .map(|i| if i == self.active { format!("[{}:sh]", i + 1) } else { format!(" {}:sh ", i + 1) })
-            .collect();
-        let hint = "  ^S-T:new ^S-W:close ^Tab:switch";
-        for s in tab_labels.iter().chain(std::iter::once(&hint.to_string())) {
-            for ch in s.chars() { self.ensure_glyph(ch); }
+        let (tab_layouts, hint) = self.tab_layouts(width as usize);
+        self.ensure_glyph('×');
+        for (label, _, _, _) in &tab_layouts {
+            for ch in label.chars() { self.ensure_glyph(ch); }
         }
+        for ch in hint.chars() { self.ensure_glyph(ch); }
         for cell in &cells {
             if cell.ch != '\0' && cell.ch != ' ' { self.ensure_glyph(cell.ch); }
         }
@@ -315,18 +372,30 @@ impl AppState {
         let bh = height as usize;
         let bar_h = self.cell_h.min(bh);
 
-        let bar_bg = rgb_u32(0x22, 0x22, 0x28);
-        let bar_fg = rgb_u32(0xc0, 0xc0, 0xc8);
-        let bar_active_bg = rgb_u32(0x3a, 0x5f, 0x8a);
-        let bar_active_fg = rgb_u32(0xff, 0xff, 0xff);
+        let bar_bg = rgb_u32(0x1f, 0x23, 0x29);
+        let bar_border = rgb_u32(0x33, 0x3a, 0x44);
+        let inactive_bg = rgb_u32(0x27, 0x2c, 0x34);
+        let inactive_fg = rgb_u32(0xb8, 0xc0, 0xcc);
+        let active_bg = rgb_u32(0x2f, 0x5f, 0x8f);
+        let active_fg = rgb_u32(0xff, 0xff, 0xff);
+        let close_fg = rgb_u32(0xd0, 0xd6, 0xde);
         fill_rect(&mut buffer, bw, bh, 0, 0, bw, bar_h, bar_bg);
-        let mut xoff = 4usize;
-        for (i, label) in tab_labels.iter().enumerate() {
-            let (fg, bgc) = if i == self.active { (bar_active_fg, bar_active_bg) } else { (bar_fg, bar_bg) };
-            let label_w = (label.chars().count() * self.cell_w).min(bw.saturating_sub(xoff));
-            fill_rect(&mut buffer, bw, bh, xoff.saturating_sub(2), 0, label_w + 4, bar_h, bgc);
-            let mut cx = xoff as i32;
+        if bar_h >= 1 {
+            fill_rect(&mut buffer, bw, bh, 0, bar_h.saturating_sub(1), bw, 1, bar_border);
+        }
+
+        for (i, (label, x0, w, close_x0)) in tab_layouts.iter().enumerate() {
+            let is_active = i == self.active;
+            let (fg, bgc) = if is_active { (active_fg, active_bg) } else { (inactive_fg, inactive_bg) };
+            fill_rect(&mut buffer, bw, bh, *x0, 1, *w, bar_h.saturating_sub(2), bgc);
+            if is_active {
+                fill_rect(&mut buffer, bw, bh, *x0, 0, *w, 2.min(bar_h), rgb_u32(0x6b, 0xb6, 0xff));
+            }
+            // tab text
+            let mut cx = (*x0 as i32) + (self.cell_w as i32 / 2);
+            let max_x = (*x0 + *w).saturating_sub(self.cell_w) as i32;
             for ch in label.chars() {
+                if cx >= max_x { break; }
                 if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
                     let gx = cx + metrics.xmin;
                     let gy = self.ascent as i32 - metrics.ymin - metrics.height as i32;
@@ -335,18 +404,29 @@ impl AppState {
                 } else {
                     cx += self.cell_w as i32;
                 }
-                if cx >= bw as i32 { break; }
             }
-            xoff += label_w + 8;
-            if xoff >= bw { break; }
+            // close button "×"
+            if let Some(cx0) = close_x0 {
+                let mut cx = *cx0 as i32;
+                if let Some((metrics, bitmap)) = self.glyph_cache.get(&'×') {
+                    let gx = cx + metrics.xmin;
+                    let gy = self.ascent as i32 - metrics.ymin - metrics.height as i32;
+                    blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, if is_active { active_fg } else { close_fg });
+                    let _ = &mut cx;
+                }
+            }
         }
-        if xoff + hint.chars().count() * self.cell_w < bw {
-            let mut cx = xoff as i32;
+
+        // hint at right if space
+        let used_w = tab_layouts.last().map(|(_, x, w, _)| x + w).unwrap_or(4);
+        let hint_w = hint.chars().count() * self.cell_w;
+        if !hint.is_empty() && used_w + 8 + hint_w < bw {
+            let mut cx = (bw.saturating_sub(hint_w + 4)) as i32;
             for ch in hint.chars() {
                 if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
                     let gx = cx + metrics.xmin;
                     let gy = self.ascent as i32 - metrics.ymin - metrics.height as i32;
-                    blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, rgb_u32(0x80, 0x80, 0x90));
+                    blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, rgb_u32(0x8a, 0x96, 0xa3));
                     cx += metrics.advance_width.ceil() as i32;
                 } else {
                     cx += self.cell_w as i32;
@@ -399,17 +479,51 @@ impl AppState {
         let _ = buffer.present();
     }
 
-    fn tab_bar_hit(&self, x: f64, y: f64) -> Option<usize> {
+    fn tab_label_text(&self, idx: usize) -> String {
+        let title = self.tabs.get(idx).map(|t| t.title.as_str()).unwrap_or("shell");
+        let mut t = title.trim().replace(['\n', '\r', '\t'], " ");
+        if t.is_empty() { t = "shell".to_string(); }
+        // truncate to keep tabs reasonable
+        let max_chars = 18usize;
+        if t.chars().count() > max_chars {
+            t = t.chars().take(max_chars.saturating_sub(1)).collect::<String>() + "…";
+        }
+        format!(" {} ", t)
+    }
+
+    fn tab_layouts(&self, bw: usize) -> (Vec<(String, usize, usize, Option<usize>)>, String) {
+        // returns (label_without_close_glyph_drawn_inline? label text, x, w, close_x) and hint
+        let mut layouts = Vec::new();
+        let mut xoff = 4usize;
+        let gap = 4usize;
+        let close_pad = self.cell_w.max(8);
+        for i in 0..self.tabs.len() {
+            let label = self.tab_label_text(i);
+            let text_w = label.chars().count() * self.cell_w;
+            let w = (text_w + close_pad + self.cell_w / 2).min(bw.saturating_sub(xoff + gap).max(1));
+            let close_x0 = if xoff + w > self.cell_w { Some(xoff + w.saturating_sub(close_pad)) } else { None };
+            layouts.push((label, xoff, w, close_x0));
+            xoff = xoff.saturating_add(w + gap);
+            if xoff >= bw { break; }
+        }
+        let hint = if self.tabs.len() <= 4 { "+  ^S-C/V copy/paste".to_string() } else { String::new() };
+        (layouts, hint)
+    }
+
+    fn tab_bar_hit(&self, x: f64, y: f64) -> Option<(usize, bool)> {
         let bar_h = self.cell_h as f64;
         if y < 0.0 || y >= bar_h { return None; }
-        let mut xoff = 4.0f64;
-        for i in 0..self.tabs.len() {
-            let label = if i == self.active { format!("[{}:sh]", i + 1) } else { format!(" {}:sh ", i + 1) };
-            let label_w = (label.chars().count() * self.cell_w) as f64;
-            let start = xoff - 2.0;
-            let end = xoff + label_w + 2.0;
-            if x >= start && x < end { return Some(i); }
-            xoff += label_w + 8.0;
+        let (layouts, _) = self.tab_layouts(self.window.inner_size().width as usize);
+        for (i, (_, x0, w, close_x0)) in layouts.iter().enumerate() {
+            let start = *x0 as f64;
+            let end = (*x0 + *w) as f64;
+            if x >= start && x < end {
+                if let Some(cx0) = close_x0 {
+                    let cstart = *cx0 as f64;
+                    if x >= cstart { return Some((i, true)); }
+                }
+                return Some((i, false));
+            }
         }
         None
     }
@@ -470,8 +584,13 @@ impl AppState {
     fn handle_mouse_press(&mut self, button: MouseButton, state: ElementState, event_loop: &ActiveEventLoop) {
         let (x, y) = self.cursor_pos;
         if state == ElementState::Pressed && button == MouseButton::Left {
-            if let Some(idx) = self.tab_bar_hit(x, y) {
-                self.active = idx;
+            if let Some((idx, close)) = self.tab_bar_hit(x, y) {
+                if close {
+                    self.close_tab_at(idx, event_loop);
+                } else {
+                    self.active = idx;
+                    self.sync_window_title();
+                }
                 self.selecting = false;
                 self.window.request_redraw();
                 return;
@@ -801,6 +920,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
             selecting: false,
             clipboard: Clipboard::default(),
         };
+        st.sync_window_title();
         st.window.request_redraw();
         self.state = Some(st);
     }
@@ -811,6 +931,10 @@ impl ApplicationHandler<UiEvent> for Uterm {
             UiEvent::Wakeup => st.window.request_redraw(),
             UiEvent::TabExited(id) => {
                 st.close_tab_by_id(id, event_loop);
+                st.window.request_redraw();
+            }
+            UiEvent::TitleChanged(id, title) => {
+                st.set_tab_title(id, title);
                 st.window.request_redraw();
             }
         }
