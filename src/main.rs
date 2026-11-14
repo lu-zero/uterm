@@ -294,6 +294,22 @@ impl AppState {
         }
     }
 
+    fn update_primary_selection(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else { return; };
+        let text = {
+            let term = tab.terminal.lock();
+            term.selection
+                .as_ref()
+                .and_then(|s| s.to_range(&term))
+                .map(|range| term.bounds_to_string(range.start, range.end))
+        };
+        if let Some(text) = text {
+            if !text.is_empty() {
+                self.clipboard.set(ClipboardType::Selection, text);
+            }
+        }
+    }
+
     fn paste_from(&mut self, ty: ClipboardType) {
         let mut text = self.clipboard.get(ty);
         if text.is_empty() && matches!(ty, ClipboardType::Selection) {
@@ -632,6 +648,7 @@ impl AppState {
                             }
                         }
                     }
+                    self.update_primary_selection();
                 }
                 self.selecting = false;
             }
