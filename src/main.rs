@@ -25,11 +25,13 @@ use winit::window::{Window, WindowId as WinitWindowId};
 
 const CASCADIA_TTF: &[u8] = include_bytes!("../CascadiaCodeNF.ttf");
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 enum UiEvent {
     Wakeup,
     TabExited(usize),
     TitleChanged(usize, String),
+    ClipboardStore(ClipboardType, String),
+    ClipboardLoad(usize, ClipboardType, Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
 }
 
 #[derive(Clone)]
@@ -46,12 +48,13 @@ impl EventListener for Listener {
             RioEvent::Title(route, title) => {
                 let _ = self.proxy.send_event(UiEvent::TitleChanged(route, title));
             }
-            RioEvent::ResetTitle => {
-                // no route info; reset active tab best-effort by routing later is not possible here,
-                // but we can wake up; better to use route 0 is wrong. Instead store via special id usize::MAX? not ideal.
-                let _ = self.proxy.send_event(UiEvent::Wakeup);
+            RioEvent::ClipboardStore(ty, text) => {
+                let _ = self.proxy.send_event(UiEvent::ClipboardStore(ty, text));
             }
-            RioEvent::SyncWindowTitle => {
+            RioEvent::ClipboardLoad(route, ty, formatter) => {
+                let _ = self.proxy.send_event(UiEvent::ClipboardLoad(route, ty, formatter));
+            }
+            RioEvent::ResetTitle | RioEvent::SyncWindowTitle => {
                 let _ = self.proxy.send_event(UiEvent::Wakeup);
             }
             _ => {
@@ -956,6 +959,16 @@ impl ApplicationHandler<UiEvent> for Uterm {
             UiEvent::TitleChanged(id, title) => {
                 st.set_tab_title(id, title);
                 st.window.request_redraw();
+            }
+            UiEvent::ClipboardStore(ty, text) => {
+                st.clipboard.set(ty, text);
+            }
+            UiEvent::ClipboardLoad(route_id, ty, formatter) => {
+                let contents = st.clipboard.get(ty);
+                let reply = formatter(&contents);
+                if let Some(tab) = st.tabs.iter().find(|t| t.id == route_id) {
+                    let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(reply.into_bytes())));
+                }
             }
         }
     }
