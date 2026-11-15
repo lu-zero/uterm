@@ -229,8 +229,7 @@ impl AppState {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         self.tabs.push(Tab::new(id, cols, rows, self.cell_w, self.cell_h, listener));
-        self.active = self.tabs.len() - 1;
-        self.sync_window_title();
+        self.select_tab(self.tabs.len() - 1);
     }
 
     fn sync_window_title(&self) {
@@ -264,30 +263,21 @@ impl AppState {
     }
 
     fn next_tab(&mut self) {
-        if !self.tabs.is_empty() {
-            self.active = (self.active + 1) % self.tabs.len();
-            self.sync_window_title();
-        }
+        if self.tabs.is_empty() { return; }
+        let idx = (self.active + 1) % self.tabs.len();
+        self.select_tab(idx);
     }
 
     fn prev_tab(&mut self) {
-        if !self.tabs.is_empty() {
-            self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
-            self.sync_window_title();
-        }
+        if self.tabs.is_empty() { return; }
+        let idx = (self.active + self.tabs.len() - 1) % self.tabs.len();
+        self.select_tab(idx);
     }
 
     fn set_tab_title(&mut self, id: usize, title: String) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
             let t = title.trim().to_string();
             tab.title = if t.is_empty() { "shell".to_string() } else { t };
-        }
-        self.sync_window_title();
-    }
-
-    fn _reset_tab_title(&mut self, id: usize) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
-            tab.title = "shell".to_string();
         }
         self.sync_window_title();
     }
@@ -447,12 +437,10 @@ impl AppState {
             }
             // close button "×"
             if let Some(cx0) = close_x0 {
-                let mut cx = *cx0 as i32;
                 if let Some((metrics, bitmap)) = self.glyph_cache.get(&'×') {
-                    let gx = cx + metrics.xmin;
+                    let gx = (*cx0 as i32) + metrics.xmin;
                     let gy = self.ascent as i32 - metrics.ymin - metrics.height as i32;
                     blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, if is_active { active_fg } else { close_fg });
-                    let _ = &mut cx;
                 }
             }
         }
