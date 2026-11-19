@@ -41,9 +41,11 @@ cargo run --release
 
 `Cargo.lock` is not committed (library-style noise for this small app); dependency resolution comes from `Cargo.toml`.
 
+On Linux the `clipboard`, `x11` and `wayland` features are enabled by default (forwarding to `rio-vt`), matching Rio’s clipboard backend pattern. You can override with cargo features if needed (e.g. `cargo build --no-default-features --features clipboard,x11`).
+
 ## Scope / limitations
 
-This is intentionally minimal:
+Terminal route IDs are `Tab.id` values and are used for tab-exit routing (`UiEvent::TabExited(id)`). This is a small embedded-terminal app, so integer IDs are sufficient.
 
 - Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
 - Basic local selection copy/paste and OSC 52 clipboard handling; no IME or xterm/kitty keyboard protocol
