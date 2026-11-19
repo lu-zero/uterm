@@ -590,6 +590,8 @@ impl AppState {
         };
         let any_button = self.mouse_buttons.iter().any(|&b| b);
         if !report_motion && !(report_drag && any_button) { return; }
+        // While scrolling, represent the held-drag state in addition to the wheel
+        // button motion: 32 + button (drag) + 32 (wheel/motion base).
         let mut base = if any_button {
             if self.mouse_buttons[0] { 32 } else if self.mouse_buttons[1] { 33 } else { 34 }
         } else {
@@ -597,6 +599,18 @@ impl AppState {
         };
         base += 32;
         let bytes = encode_mouse_report(base, col, row, true, sgr, utf8);
+        let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
+    }
+
+    fn send_wheel_motion(&self, button: u8, col: u16, row: u16) {
+        // Report wheel as button motion (64/65) during wheel reporting.
+        let Some(tab) = self.tabs.get(self.active) else { return; };
+        let (sgr, utf8) = {
+            let term = tab.terminal.lock();
+            let mode = term.mode();
+            (mode.contains(Mode::SGR_MOUSE), mode.contains(Mode::UTF8_MOUSE))
+        };
+        let bytes = encode_mouse_report(button, col, row, true, sgr, utf8);
         let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
     }
 
@@ -1049,8 +1063,12 @@ impl ApplicationHandler<UiEvent> for Uterm {
                     if lines != 0 {
                         let (btn, count) = if lines > 0 { (64u8, lines) } else { (65u8, -lines) };
                         for _ in 0..count.min(10) {
-                            st.send_mouse_report(btn, col as u16, row as u16, true);
-                            st.send_mouse_report(btn, col as u16, row as u16, false);
+                            if st.mouse_report_mode() {
+                                st.send_wheel_motion(btn, col as u16, row as u16);
+                            } else {
+                                st.send_mouse_report(btn, col as u16, row as u16, true);
+                                st.send_mouse_report(btn, col as u16, row as u16, false);
+                            }
                         }
                     }
                 }
