@@ -338,11 +338,17 @@ impl AppState {
         self.paste_from(ClipboardType::Clipboard);
     }
 
+    fn glyph_is_drawable(&self, ch: char) -> bool {
+        let (metrics, bitmap) = self.font.rasterize(ch, self.font_px);
+        metrics.advance_width > 0.0 && metrics.height > 0 && bitmap.iter().any(|&a| a > 0)
+    }
+
     fn ensure_glyph(&mut self, ch: char) {
-        if !self.glyph_cache.contains_key(&ch) {
-            let raster = self.font.rasterize(ch, self.font_px);
-            self.glyph_cache.insert(ch, raster);
+        if self.glyph_cache.contains_key(&ch) || !self.glyph_is_drawable(ch) {
+            return;
         }
+        let raster = self.font.rasterize(ch, self.font_px);
+        self.glyph_cache.insert(ch, raster);
     }
 
     fn render(&mut self) {
@@ -501,7 +507,7 @@ impl AppState {
         // truncate to keep tabs reasonable
         let max_chars = 18usize;
         if t.chars().count() > max_chars {
-            t = t.chars().take(max_chars.saturating_sub(1)).collect::<String>() + "…";
+            t = t.chars().take(max_chars.saturating_sub(1)).collect::<String>() + ".";
         }
         format!(" {} ", t)
     }
