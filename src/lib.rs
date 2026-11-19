@@ -29,6 +29,7 @@ const CASCADIA_TTF: &[u8] = include_bytes!("../CascadiaCodeNF.ttf");
 #[derive(Clone)]
 enum UiEvent {
     Wakeup,
+    TitleSync,
     TabExited(usize),
     TitleChanged(usize, String),
     ClipboardStore(ClipboardType, String),
@@ -55,8 +56,11 @@ impl EventListener for Listener {
             RioEvent::ClipboardLoad(route, ty, formatter) => {
                 let _ = self.proxy.send_event(UiEvent::ClipboardLoad(route, ty, formatter));
             }
-            RioEvent::ResetTitle | RioEvent::SyncWindowTitle => {
+            RioEvent::ResetTitle => {
                 let _ = self.proxy.send_event(UiEvent::Wakeup);
+            }
+            RioEvent::SyncWindowTitle => {
+                let _ = self.proxy.send_event(UiEvent::TitleSync);
             }
             _ => {
                 let _ = self.proxy.send_event(UiEvent::Wakeup);
@@ -979,7 +983,12 @@ impl ApplicationHandler<UiEvent> for Uterm {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
         let Some(st) = &mut self.state else { return; };
         match event {
-            UiEvent::Wakeup => st.window.request_redraw(),
+            UiEvent::Wakeup | UiEvent::TitleSync => {
+                if let UiEvent::TitleSync = event {
+                    st.sync_window_title();
+                }
+                st.window.request_redraw();
+            }
             UiEvent::TabExited(id) => {
                 st.close_tab_by_id(id, event_loop);
                 st.window.request_redraw();
