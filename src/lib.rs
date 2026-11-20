@@ -26,6 +26,77 @@ use winit::window::{Window, WindowId as WinitWindowId};
 
 const CASCADIA_TTF: &[u8] = include_bytes!("../CascadiaCodeNF.ttf");
 
+/// A requested terminal geometry in character cells (columns x rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartupGeometry {
+    cols: usize,
+    rows: usize,
+}
+
+const PROFILES: &[(&str, usize, usize)] = &[
+    ("sh", 80, 25),
+    ("mc", 80, 24),
+    ("ssh", 128, 40),
+];
+
+fn parse_geometry(s: &str) -> Option<(usize, usize)> {
+    let (cols, rows) = s.trim().split_once(['x', 'X'])?;
+    Some((cols.trim().parse::<usize>().ok()?, rows.trim().parse::<usize>().ok()?))
+}
+
+/// Parse `--geometry WxH` and `--profile NAME` from process arguments.
+/// An explicit `--geometry` wins over a profile.
+fn parse_args() -> Option<StartupGeometry> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut geometry = None;
+    let mut profile = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let value = arg.strip_prefix("--geometry=").or_else(|| arg.strip_prefix("--profile="));
+        if let Some(v) = value {
+            if arg.starts_with("--geometry") {
+                geometry = parse_geometry(v);
+            } else {
+                profile = Some(v.to_string());
+            }
+        } else if arg == "--geometry" || arg == "--profile" {
+            if let Some(v) = args.get(i + 1) {
+                if arg == "--geometry" {
+                    geometry = parse_geometry(v);
+                } else {
+                    profile = Some(v.clone());
+                }
+                i += 1;
+            }
+        } else if arg == "--help" || arg == "-h" {
+            println!("uterm: a tiny terminal\n  --geometry WxH   terminal size in cells (e.g. 128x40)\n  --profile NAME   one of: sh, mc, ssh\n  Ctrl+Shift+T/W    new/close tab\n  Ctrl+Shift+C/V    copy/paste\n  Ctrl+Shift+N      new window\n  Alt+Enter         toggle resize lock");
+            std::process::exit(0);
+        }
+        i += 1;
+    }
+    if geometry.is_none() {
+        if let Some(p) = profile.as_deref() {
+            geometry = PROFILES.iter().find(|(name, _, _)| *name == p).map(|(_, c, r)| (*c, *r));
+        }
+    }
+    geometry.map(|(cols, rows)| StartupGeometry { cols, rows })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn geometry_parsing() {
+        assert_eq!(parse_geometry("128x40"), Some((128, 40)));
+        assert_eq!(parse_geometry("80X24"), Some((80, 24)));
+        assert_eq!(parse_geometry(" 100 x 30 "), Some((100, 30)));
+        assert_eq!(parse_geometry("garbage"), None);
+        assert_eq!(parse_geometry("12"), None);
+    }
+}
+
 #[derive(Clone)]
 enum UiEvent {
     Wakeup,
@@ -1004,10 +1075,23 @@ impl ApplicationHandler<UiEvent> for Uterm {
 
         // Build state first so real font metrics are available when the first tab is created.
         let mut st = AppState::new(window, surface, Vec::new(), self.proxy.clone(), clipboard);
-        let sz = st.window.inner_size();
-        let cols = (sz.width as usize / st.cell_w.max(1)).max(2);
-        let total_rows = (sz.height as usize / st.cell_h.max(1)).max(2);
-        let rows = total_rows.saturating_sub(1).max(1);
+
+        let startup = parse_args();
+        let (cols, rows) = match startup {
+            Some(g) => {
+                // Request the exact terminal pixel size (plus one row for the tab bar).
+                let width = (g.cols * st.cell_w) as u32;
+                let height = ((g.rows + 1) * st.cell_h) as u32;
+                let _ = st.window.request_inner_size(PhysicalSize::new(width, height));
+                (g.cols, g.rows)
+            }
+            None => {
+                let sz = st.window.inner_size();
+                let cols = (sz.width as usize / st.cell_w.max(1)).max(2);
+                let total_rows = (sz.height as usize / st.cell_h.max(1)).max(2);
+                (cols, total_rows.saturating_sub(1).max(1))
+            }
+        };
         let listener = Listener { proxy: self.proxy.clone() };
         let first = Tab::new(0, cols, rows, st.cell_w, st.cell_h, listener);
         st.tabs.push(first);
