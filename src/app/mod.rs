@@ -5,8 +5,9 @@ pub(crate) mod render;
 pub(crate) mod tabs;
 
 use crate::cli::PRESET_SIZES;
+use crate::error::Error;
 use crate::event::UiEvent;
-use crate::terminal::Tab;
+use crate::terminal::{cells_to_px, Tab};
 use fontdue::Font;
 use rio_vt::clipboard::{Clipboard, ClipboardType};
 use rio_vt::crosswords::Mode;
@@ -100,14 +101,15 @@ impl AppState {
         tabs: Vec<Tab>,
         proxy: EventLoopProxy<UiEvent>,
         clipboard: SystemClipboard,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let mut st = Self {
             window,
             surface,
             tabs,
             active: 0,
             next_tab_id: 1,
-            font: Font::from_bytes(CASCADIA_TTF, fontdue::FontSettings::default()).expect("font"),
+            font: Font::from_bytes(CASCADIA_TTF, fontdue::FontSettings::default())
+                .map_err(Error::Font)?,
             font_px: 14.0,
             cell_w: 8,
             cell_h: 16,
@@ -123,19 +125,23 @@ impl AppState {
             resize_overlay: None,
             preset_index: 0,
         };
-        st.sync_font_metrics();
-        st
+        st.sync_font_metrics()?;
+        Ok(st)
     }
 
-    pub(crate) fn sync_font_metrics(&mut self) {
+    pub(crate) fn sync_font_metrics(&mut self) -> Result<(), Error> {
         let scale = self.window.scale_factor() as f32;
         let font_px = (14.0 * scale * (96.0 / 72.0)).round().max(12.0);
-        let lm = self.font.horizontal_line_metrics(font_px).unwrap();
+        let lm = self
+            .font
+            .horizontal_line_metrics(font_px)
+            .ok_or(Error::FontMetrics(font_px))?;
         let (m_m, _) = self.font.rasterize('M', font_px);
         self.font_px = font_px;
         self.cell_w = m_m.advance_width.ceil().max(1.0) as usize;
         self.cell_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as usize;
         self.ascent = lm.ascent;
+        Ok(())
     }
 
     pub(crate) fn lock_toggle(&mut self) {
@@ -156,16 +162,18 @@ impl AppState {
     }
 
     /// Apply a preset size in cells. An explicit size change clears the resize lock.
-    pub(crate) fn apply_preset(&mut self, direction: i32) {
+    pub(crate) fn apply_preset(&mut self, direction: i32) -> Result<(), Error> {
         let len = PRESET_SIZES.len() as i32;
         self.preset_index = (self.preset_index as i32 + direction).rem_euclid(len) as usize;
         self.geometry_locked = false;
         let (cols, rows) = PRESET_SIZES[self.preset_index];
-        let width = (cols * self.cell_w) as u32;
-        let height = ((rows + 1) * self.cell_h) as u32;
+        let rows_with_bar = rows.checked_add(1).ok_or(Error::GridSize { cols, rows })?;
+        let width = cells_to_px(cols, self.cell_w, cols, rows)?;
+        let height = cells_to_px(rows_with_bar, self.cell_h, cols, rows)?;
         let _ = self
             .window
             .request_inner_size(PhysicalSize::new(width, height));
+        Ok(())
     }
 
     pub(crate) fn show_resize_overlay(&mut self) {
@@ -173,21 +181,26 @@ impl AppState {
         self.resize_overlay = Some((Instant::now(), format!("{}x{}", cols, rows)));
     }
 
-    pub(crate) fn set_geometry_from_size(&mut self, size: PhysicalSize<u32>) {
+    pub(crate) fn set_geometry_from_size(&mut self, size: PhysicalSize<u32>) -> Result<(), Error> {
         // `size` and cell_w/cell_h are both physical pixels, so use it directly.
         let width = size.width as usize;
         let height = size.height as usize;
         if self.geometry_locked {
-            return;
+            return Ok(());
         }
-        self.resize_all_tabs_with(width, height);
+        self.resize_all_tabs_with(width, height)
     }
 
-    pub(crate) fn resize_all_tabs_with(&mut self, width: usize, height: usize) {
+    pub(crate) fn resize_all_tabs_with(
+        &mut self,
+        width: usize,
+        height: usize,
+    ) -> Result<(), Error> {
         let (cols, rows) = self.grid_dims_from(width, height);
         for tab in &self.tabs {
-            tab.resize(cols, rows, self.cell_w, self.cell_h);
+            tab.resize(cols, rows, self.cell_w, self.cell_h)?;
         }
+        Ok(())
     }
 
     pub(crate) fn grid_dims(&self) -> (usize, usize) {
@@ -196,9 +209,10 @@ impl AppState {
     }
 
     pub(crate) fn grid_dims_from(&self, width: usize, height: usize) -> (usize, usize) {
-        let cols = (width / self.cell_w.max(1)).max(2);
-        let total_rows = (height / self.cell_h.max(1)).max(2);
-        let content_rows = total_rows.saturating_sub(1).max(1);
+        let max_cells = usize::from(u16::MAX);
+        let cols = (width / self.cell_w.max(1)).clamp(2, max_cells);
+        let total_rows = (height / self.cell_h.max(1)).clamp(2, max_cells);
+        let content_rows = total_rows.saturating_sub(1).clamp(1, max_cells);
         (cols, content_rows)
     }
 }

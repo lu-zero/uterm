@@ -223,6 +223,10 @@ pub(crate) fn rgb_u32(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | b as u32
 }
 
+fn pixel_index(bw: usize, x: usize, y: usize) -> Option<usize> {
+    y.checked_mul(bw)?.checked_add(x)
+}
+
 pub(crate) fn fill_rect(
     buf: &mut [u32],
     bw: usize,
@@ -233,12 +237,15 @@ pub(crate) fn fill_rect(
     h: usize,
     color: u32,
 ) {
-    let x2 = (x + w).min(bw);
-    let y2 = (y + h).min(bh);
+    let x2 = x.saturating_add(w).min(bw);
+    let y2 = y.saturating_add(h).min(bh);
     for yy in y.min(bh)..y2 {
-        let row = yy * bw;
         for xx in x.min(bw)..x2 {
-            buf[row + xx] = color;
+            if let Some(idx) = pixel_index(bw, xx, yy) {
+                if let Some(px) = buf.get_mut(idx) {
+                    *px = color;
+                }
+            }
         }
     }
 }
@@ -254,14 +261,18 @@ pub(crate) fn fill_rect_alpha(
     color: u32,
     a: u8,
 ) {
-    let x2 = (x + w).min(bw);
-    let y2 = (y + h).min(bh);
+    let x2 = x.saturating_add(w).min(bw);
+    let y2 = y.saturating_add(h).min(bh);
     let a = a as u32;
     let ia = 255 - a;
     for yy in y.min(bh)..y2 {
-        let row = yy * bw;
         for xx in x.min(bw)..x2 {
-            buf[row + xx] = blend(buf[row + xx], color, a, ia);
+            let Some(idx) = pixel_index(bw, xx, yy) else {
+                continue;
+            };
+            if let Some(px) = buf.get_mut(idx) {
+                *px = blend(*px, color, a, ia);
+            }
         }
     }
 }
@@ -299,13 +310,25 @@ pub(crate) fn blit_glyph(
             if px < 0 || px >= bw as i32 {
                 continue;
             }
-            let alpha = bitmap[y * metrics.width + x] as u32;
+            let Some(offset) = y
+                .checked_mul(metrics.width)
+                .and_then(|off| off.checked_add(x))
+            else {
+                continue;
+            };
+            let Some(alpha) = bitmap.get(offset).map(|sample| u32::from(*sample)) else {
+                continue;
+            };
             if alpha == 0 {
                 continue;
             }
-            let idx = py as usize * bw + px as usize;
+            let Some(idx) = pixel_index(bw, px as usize, py as usize) else {
+                continue;
+            };
             let ia = 255 - alpha;
-            buf[idx] = blend(buf[idx], color, alpha, ia);
+            if let Some(pixel) = buf.get_mut(idx) {
+                *pixel = blend(*pixel, color, alpha, ia);
+            }
         }
     }
 }

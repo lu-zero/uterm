@@ -1,4 +1,5 @@
 use super::{AppState, LocalPointerState};
+use crate::error::Error;
 use crate::event::Listener;
 use crate::terminal::Tab;
 use winit::event_loop::ActiveEventLoop;
@@ -41,16 +42,17 @@ impl AppState {
         self.sync_window_title();
     }
 
-    pub(crate) fn new_tab(&mut self) {
+    pub(crate) fn new_tab(&mut self) -> Result<(), Error> {
         let (cols, rows) = self.grid_dims();
         let listener = Listener {
             proxy: self.proxy.clone(),
         };
         let id = self.next_tab_id;
+        let tab = Tab::new(id, cols, rows, self.cell_w, self.cell_h, listener)?;
         self.next_tab_id += 1;
-        self.tabs
-            .push(Tab::new(id, cols, rows, self.cell_w, self.cell_h, listener));
+        self.tabs.push(tab);
         self.select_tab(self.tabs.len() - 1);
+        Ok(())
     }
 
     pub(crate) fn sync_window_title(&self) {

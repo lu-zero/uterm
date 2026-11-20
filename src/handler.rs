@@ -1,9 +1,10 @@
 use crate::app::input::key_to_bytes;
 use crate::app::{AppState, LocalPointerState, SystemClipboard, OVERLAY_TIMEOUT};
-use crate::cli::{is_command_modifier, parse_args};
+use crate::cli::{is_command_modifier, StartupGeometry};
+use crate::error::Error;
 use crate::event::Listener;
 use crate::event::UiEvent;
-use crate::terminal::Tab;
+use crate::terminal::{cells_to_px, Tab};
 use rio_vt::event::Msg;
 use softbuffer::{Context, Surface};
 use std::borrow::Cow;
@@ -18,57 +19,70 @@ use winit::window::{Window, WindowId as WinitWindowId};
 pub(crate) struct Uterm {
     pub(crate) proxy: EventLoopProxy<UiEvent>,
     pub(crate) state: Option<AppState>,
+    pub(crate) geometry: Option<StartupGeometry>,
+    pub(crate) error: Option<Error>,
 }
 
-impl ApplicationHandler<UiEvent> for Uterm {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() {
-            return;
+impl Uterm {
+    fn fail(&mut self, event_loop: &ActiveEventLoop, err: Error) {
+        if self.error.is_none() {
+            self.error = Some(err);
         }
+        event_loop.exit();
+    }
+
+    fn start(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Error> {
         let window = Rc::new(
-            event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title("uterm")
-                        .with_inner_size(LogicalSize::new(900.0, 620.0)),
-                )
-                .unwrap(),
+            event_loop.create_window(
+                Window::default_attributes()
+                    .with_title("uterm")
+                    .with_inner_size(LogicalSize::new(900.0, 620.0)),
+            )?,
         );
-        let context = Context::new(window.clone()).unwrap();
-        let surface = Surface::new(&context, window.clone()).unwrap();
+        let context = Context::new(window.clone())?;
+        let surface = Surface::new(&context, window.clone())?;
 
         let clipboard = SystemClipboard::new(event_loop);
 
         // Build state first so real font metrics are available when the first tab is created.
-        let mut st = AppState::new(window, surface, Vec::new(), self.proxy.clone(), clipboard);
+        let mut st = AppState::new(window, surface, Vec::new(), self.proxy.clone(), clipboard)?;
 
-        let startup = parse_args();
-        let (cols, rows) = match startup {
-            Some(g) => {
-                // Request the exact terminal pixel size (plus one row for the tab bar).
-                let width = (g.cols * st.cell_w) as u32;
-                let height = ((g.rows + 1) * st.cell_h) as u32;
-                let _ = st
-                    .window
-                    .request_inner_size(PhysicalSize::new(width, height));
-                (g.cols, g.rows)
-            }
-            None => {
-                let sz = st.window.inner_size();
-                let cols = (sz.width as usize / st.cell_w.max(1)).max(2);
-                let total_rows = (sz.height as usize / st.cell_h.max(1)).max(2);
-                (cols, total_rows.saturating_sub(1).max(1))
-            }
+        let (cols, rows) = if let Some(g) = self.geometry {
+            // Request the exact terminal pixel size (plus one row for the tab bar).
+            let rows_with_bar = g.rows.checked_add(1).ok_or(Error::GridSize {
+                cols: g.cols,
+                rows: g.rows,
+            })?;
+            let width = cells_to_px(g.cols, st.cell_w, g.cols, g.rows)?;
+            let height = cells_to_px(rows_with_bar, st.cell_h, g.cols, g.rows)?;
+            let _ = st
+                .window
+                .request_inner_size(PhysicalSize::new(width, height));
+            (g.cols, g.rows)
+        } else {
+            st.grid_dims()
         };
         let listener = Listener {
             proxy: self.proxy.clone(),
         };
-        let first = Tab::new(0, cols, rows, st.cell_w, st.cell_h, listener);
+        let first = Tab::new(0, cols, rows, st.cell_w, st.cell_h, listener)?;
         st.tabs.push(first);
 
         st.sync_window_title();
         st.window.request_redraw();
         self.state = Some(st);
+        Ok(())
+    }
+}
+
+impl ApplicationHandler<UiEvent> for Uterm {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_some() || self.error.is_some() {
+            return;
+        }
+        if let Err(err) = self.start(event_loop) {
+            self.fail(event_loop, err);
+        }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
@@ -119,7 +133,10 @@ impl ApplicationHandler<UiEvent> for Uterm {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => st.render(),
             WindowEvent::Resized(size) => {
-                st.set_geometry_from_size(size);
+                if let Err(err) = st.set_geometry_from_size(size) {
+                    self.fail(event_loop, err);
+                    return;
+                }
                 st.show_resize_overlay();
                 event_loop.set_control_flow(ControlFlow::wait_duration(OVERLAY_TIMEOUT));
                 st.window.request_redraw();
@@ -202,7 +219,10 @@ impl ApplicationHandler<UiEvent> for Uterm {
                     if let Key::Character(s) = &k.logical_key {
                         let c = s.to_lowercase();
                         if c == "t" {
-                            st.new_tab();
+                            if let Err(err) = st.new_tab() {
+                                self.fail(event_loop, err);
+                                return;
+                            }
                             st.window.request_redraw();
                             return;
                         } else if c == "w" {
@@ -210,11 +230,17 @@ impl ApplicationHandler<UiEvent> for Uterm {
                             st.window.request_redraw();
                             return;
                         } else if c == "=" || c == "+" {
-                            st.apply_preset(1);
+                            if let Err(err) = st.apply_preset(1) {
+                                self.fail(event_loop, err);
+                                return;
+                            }
                             st.window.request_redraw();
                             return;
                         } else if c == "-" || c == "_" {
-                            st.apply_preset(-1);
+                            if let Err(err) = st.apply_preset(-1) {
+                                self.fail(event_loop, err);
+                                return;
+                            }
                             st.window.request_redraw();
                             return;
                         }

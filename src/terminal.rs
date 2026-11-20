@@ -1,3 +1,4 @@
+use crate::error::Error;
 use crate::event::Listener;
 use rio_vt::ansi::CursorShape;
 use rio_vt::crosswords::grid::Dimensions;
@@ -47,6 +48,39 @@ pub(crate) struct Tab {
     pub(crate) pty: PtyHandle,
 }
 
+/// Columns and rows accepted by the PTY winsize and by `rio-vt`.
+///
+/// Zero columns reach an unsafe row initializer that only `debug_assert`s
+/// `columns >= 1`. Values above `u16::MAX` truncate when stored in a winsize.
+pub(crate) fn checked_grid(cols: usize, rows: usize) -> Result<(u16, u16), Error> {
+    match (u16::try_from(cols), u16::try_from(rows)) {
+        (Ok(cols), Ok(rows)) if cols >= 1 && rows >= 1 => Ok((cols, rows)),
+        _ => Err(Error::GridSize { cols, rows }),
+    }
+}
+
+/// Pixel extent of `cells` cells. Saturates at `u16::MAX` because winsize
+/// stores pixels in a `u16` and the value is advisory.
+fn winsize_px(cells: u16, cell_px: usize) -> u16 {
+    usize::from(cells)
+        .checked_mul(cell_px)
+        .and_then(|px| u16::try_from(px).ok())
+        .unwrap_or(u16::MAX)
+}
+
+/// Pixel extent that has to fit in a window size (`u32`).
+pub(crate) fn cells_to_px(
+    cells: usize,
+    cell_px: usize,
+    cols: usize,
+    rows: usize,
+) -> Result<u32, Error> {
+    cells
+        .checked_mul(cell_px)
+        .and_then(|px| u32::try_from(px).ok())
+        .ok_or(Error::GridSize { cols, rows })
+}
+
 impl Tab {
     pub(crate) fn new(
         id: usize,
@@ -55,7 +89,10 @@ impl Tab {
         cell_w: usize,
         cell_h: usize,
         listener: Listener,
-    ) -> Self {
+    ) -> Result<Self, Error> {
+        let (cols_u16, rows_u16) = checked_grid(cols, rows)?;
+        let cols = usize::from(cols_u16);
+        let rows = usize::from(rows_u16);
         let terminal = Arc::new(FairMutex::new(Crosswords::new(
             TermSize {
                 cols,
@@ -77,17 +114,16 @@ impl Tab {
             Vec::new(),
             &cwd,
             None,
-            cols as u16,
-            rows as u16,
-            (cols * cell_w) as u16,
-            (rows * cell_h) as u16,
-        )
-        .expect("create pty");
-        let machine =
-            Machine::new(terminal.clone(), pty, listener, WindowId::from(0), id).expect("machine");
+            cols_u16,
+            rows_u16,
+            winsize_px(cols_u16, cell_w),
+            winsize_px(rows_u16, cell_h),
+        )?;
+        let machine = Machine::new(terminal.clone(), pty, listener, WindowId::from(0), id)
+            .map_err(Error::Machine)?;
         let channel = machine.channel();
         let thread = machine.spawn();
-        Tab {
+        Ok(Tab {
             id,
             title: "shell".to_string(),
             terminal,
@@ -95,13 +131,20 @@ impl Tab {
                 channel,
                 _thread: thread,
             },
-        }
+        })
     }
 
-    pub(crate) fn resize(&self, cols: usize, rows: usize, cell_w: usize, cell_h: usize) {
+    pub(crate) fn resize(
+        &self,
+        cols: usize,
+        rows: usize,
+        cell_w: usize,
+        cell_h: usize,
+    ) -> Result<(), Error> {
+        let (cols_u16, rows_u16) = checked_grid(cols, rows)?;
         let size = TermSize {
-            cols,
-            rows,
+            cols: usize::from(cols_u16),
+            rows: usize::from(rows_u16),
             cell_w: cell_w as f32,
             cell_h: cell_h as f32,
         };
@@ -110,10 +153,11 @@ impl Tab {
             term.resize(size);
         }
         let _ = self.pty.channel.send(Msg::Resize(WindowSize {
-            rows: rows as u16,
-            cols: cols as u16,
-            width: (cols * cell_w) as u16,
-            height: (rows * cell_h) as u16,
+            rows: rows_u16,
+            cols: cols_u16,
+            width: winsize_px(cols_u16, cell_w),
+            height: winsize_px(rows_u16, cell_h),
         }));
+        Ok(())
     }
 }

@@ -5,7 +5,6 @@ use crate::draw::{
 use rio_vt::ansi::CursorShape;
 use rio_vt::config::colors::NamedColor;
 use rio_vt::crosswords::grid::Dimensions;
-use rio_vt::crosswords::pos::Column;
 use rio_vt::crosswords::Mode;
 use std::num::NonZeroU32;
 
@@ -39,8 +38,11 @@ impl AppState {
         if width == 0 || height == 0 {
             return;
         }
-        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-            let _ = self.surface.resize(w, h);
+        let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) else {
+            return;
+        };
+        if self.surface.resize(w, h).is_err() {
+            return;
         }
 
         let (
@@ -55,7 +57,9 @@ impl AppState {
             cur_u,
             selection,
         ) = {
-            let tab = &self.tabs[self.active];
+            let Some(tab) = self.tabs.get(self.active) else {
+                return;
+            };
             let mut term = tab.terminal.lock();
             let rows_vec: Vec<_> = term.visible_rows();
             let ncols = term.grid.columns();
@@ -68,10 +72,20 @@ impl AppState {
             let cur_u = resolve_named(&term.colors, NamedColor::Cursor, 0xf0, 0xf0, 0xf0);
             let selection = term.selection.as_ref().and_then(|s| s.to_range(&term));
 
-            let mut cells = Vec::with_capacity(nrows * ncols);
+            let mut cells = Vec::new();
+            if let Some(n) = nrows.checked_mul(ncols) {
+                let _ = cells.try_reserve(n);
+            }
             for row in &rows_vec {
                 for col in 0..ncols {
-                    let square = &row[Column(col)];
+                    let Some(square) = row.inner.get(col) else {
+                        cells.push(CellRender {
+                            ch: '\0',
+                            fg: default_fg,
+                            bg: default_bg,
+                        });
+                        continue;
+                    };
                     let style = term.grid.style_of(square);
                     let mut fg = resolve_ansi_color(style.fg, &term.colors, default_fg);
                     let mut bg = resolve_ansi_color(style.bg, &term.colors, default_bg);
@@ -119,8 +133,10 @@ impl AppState {
         };
         buffer.fill(default_bg);
 
-        let bw = width as usize;
-        let bh = height as usize;
+        // Draw into the buffer's own size so a failed or stale resize cannot
+        // index past the allocation.
+        let bw = buffer.width().get() as usize;
+        let bh = buffer.height().get() as usize;
         let bar_h = self.cell_h.min(bh);
 
         let bar_bg = rgb_u32(0x1f, 0x23, 0x29);
@@ -215,7 +231,9 @@ impl AppState {
                 break;
             }
             for c in 0..ncols {
-                let idx = r * ncols + c;
+                let Some(idx) = r.checked_mul(ncols).and_then(|i| i.checked_add(c)) else {
+                    continue;
+                };
                 let Some(cell) = cells.get(idx) else {
                     continue;
                 };
