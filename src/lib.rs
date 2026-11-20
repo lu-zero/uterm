@@ -17,7 +17,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
@@ -174,22 +174,65 @@ struct AppState {
     mouse_buttons: [bool; 3], // left, middle, right
     local_pointer: LocalPointerState,
     clipboard: Clipboard,
+    geometry_locked: bool,
+}
+
+impl AppState {
+    fn new(window: Rc<Window>, surface: Surface<Rc<Window>, Rc<Window>>, tabs: Vec<Tab>, proxy: EventLoopProxy<UiEvent>, clipboard: Clipboard) -> Self {
+        let mut st = Self {
+            window, surface, tabs, active: 0, next_tab_id: 1,
+            font: Font::from_bytes(CASCADIA_TTF, fontdue::FontSettings::default()).expect("font"),
+            font_px: 14.0, cell_w: 8, cell_h: 16, ascent: 0.0,
+            modifiers: Modifiers::default(), glyph_cache: HashMap::new(), proxy,
+            cursor_pos: (0.0, 0.0), mouse_buttons: [false; 3], local_pointer: LocalPointerState::Idle,
+            clipboard, geometry_locked: false,
+        };
+        st.sync_font_metrics();
+        st
+    }
+
+    fn sync_font_metrics(&mut self) {
+        let scale = self.window.scale_factor() as f32;
+        let font_px = (14.0 * scale * (96.0 / 72.0)).round().max(12.0);
+        let lm = self.font.horizontal_line_metrics(font_px).unwrap();
+        let (m_m, _) = self.font.rasterize('M', font_px);
+        self.font_px = font_px;
+        self.cell_w = m_m.advance_width.ceil().max(1.0) as usize;
+        self.cell_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as usize;
+        self.ascent = lm.ascent;
+    }
+
+    fn lock_toggle(&mut self) {
+        self.geometry_locked = !self.geometry_locked;
+    }
+
+    fn set_geometry_from_size(&mut self, size: PhysicalSize<u32>) {
+        // `size` and cell_w/cell_h are both physical pixels, so use it directly.
+        let width = size.width as usize;
+        let height = size.height as usize;
+        if self.geometry_locked { return; }
+        self.resize_all_tabs_with(width, height);
+    }
+
+    fn resize_all_tabs_with(&mut self, width: usize, height: usize) {
+        let (cols, rows) = self.grid_dims_from(width, height);
+        for tab in &self.tabs {
+            tab.resize(cols, rows, self.cell_w, self.cell_h);
+        }
+    }
+
+    fn grid_dims_from(&self, width: usize, height: usize) -> (usize, usize) {
+        let cols = (width / self.cell_w.max(1)).max(2);
+        let total_rows = (height / self.cell_h.max(1)).max(2);
+        let content_rows = total_rows.saturating_sub(1).max(1);
+        (cols, content_rows)
+    }
 }
 
 impl AppState {
     fn grid_dims(&self) -> (usize, usize) {
         let sz = self.window.inner_size();
-        let cols = (sz.width as usize / self.cell_w.max(1)).max(2);
-        let total_rows = (sz.height as usize / self.cell_h.max(1)).max(2);
-        let content_rows = total_rows.saturating_sub(1).max(1);
-        (cols, content_rows)
-    }
-
-    fn resize_all_tabs(&mut self) {
-        let (cols, rows) = self.grid_dims();
-        for tab in &self.tabs {
-            tab.resize(cols, rows, self.cell_w, self.cell_h);
-        }
+        self.grid_dims_from(sz.width as usize, sz.height as usize)
     }
 
     fn clamp_active(&mut self) {
@@ -951,23 +994,6 @@ impl ApplicationHandler<UiEvent> for Uterm {
         let context = Context::new(window.clone()).unwrap();
         let surface = Surface::new(&context, window.clone()).unwrap();
 
-        let font = Font::from_bytes(CASCADIA_TTF, fontdue::FontSettings::default()).expect("font");
-        let scale = window.scale_factor() as f32;
-        let font_px = (14.0 * scale * (96.0 / 72.0)).round().max(12.0);
-        let lm = font.horizontal_line_metrics(font_px).unwrap();
-        let (m_m, _) = font.rasterize('M', font_px);
-        let cell_w = m_m.advance_width.ceil().max(1.0) as usize;
-        let cell_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as usize;
-        let ascent = lm.ascent;
-
-        let sz = window.inner_size();
-        let cols = (sz.width as usize / cell_w).max(2);
-        let total_rows = (sz.height as usize / cell_h).max(2);
-        let rows = total_rows.saturating_sub(1).max(1);
-
-        let listener = Listener { proxy: self.proxy.clone() };
-        let first = Tab::new(0, cols, rows, cell_w, cell_h, listener);
-
         let clipboard = unsafe {
             event_loop
                 .display_handle()
@@ -976,25 +1002,16 @@ impl ApplicationHandler<UiEvent> for Uterm {
                 .unwrap_or_default()
         };
 
-        let st = AppState {
-            window,
-            surface,
-            tabs: vec![first],
-            active: 0,
-            next_tab_id: 1,
-            font,
-            font_px,
-            cell_w,
-            cell_h,
-            ascent,
-            modifiers: Modifiers::default(),
-            glyph_cache: HashMap::new(),
-            proxy: self.proxy.clone(),
-            cursor_pos: (0.0, 0.0),
-            mouse_buttons: [false; 3],
-            local_pointer: LocalPointerState::Idle,
-            clipboard,
-        };
+        // Build state first so real font metrics are available when the first tab is created.
+        let mut st = AppState::new(window, surface, Vec::new(), self.proxy.clone(), clipboard);
+        let sz = st.window.inner_size();
+        let cols = (sz.width as usize / st.cell_w.max(1)).max(2);
+        let total_rows = (sz.height as usize / st.cell_h.max(1)).max(2);
+        let rows = total_rows.saturating_sub(1).max(1);
+        let listener = Listener { proxy: self.proxy.clone() };
+        let first = Tab::new(0, cols, rows, st.cell_w, st.cell_h, listener);
+        st.tabs.push(first);
+
         st.sync_window_title();
         st.window.request_redraw();
         self.state = Some(st);
@@ -1035,7 +1052,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => st.render(),
-            WindowEvent::Resized(_) => { st.resize_all_tabs(); st.window.request_redraw(); }
+            WindowEvent::Resized(size) => { st.set_geometry_from_size(size); st.window.request_redraw(); }
             WindowEvent::ModifiersChanged(m) => { st.modifiers = m; }
             WindowEvent::CursorMoved { position, .. } => {
                 st.cursor_pos = (position.x, position.y);
@@ -1078,6 +1095,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
                 let mods = st.modifiers.state();
                 let ctrl = mods.control_key();
                 let shift = mods.shift_key();
+                let alt = mods.alt_key();
 
                 if ctrl && shift {
                     if let Key::Character(s) = &k.logical_key {
@@ -1088,6 +1106,11 @@ impl ApplicationHandler<UiEvent> for Uterm {
                         else if c == "v" { st.paste_clipboard(); return; }
                     }
                     if matches!(k.logical_key, Key::Named(NamedKey::Tab)) { st.prev_tab(); st.window.request_redraw(); return; }
+                }
+                if alt && matches!(k.logical_key, Key::Named(NamedKey::Enter)) {
+                    st.lock_toggle();
+                    st.window.request_redraw();
+                    return;
                 }
                 if ctrl {
                     if matches!(k.logical_key, Key::Named(NamedKey::Tab)) && !shift { st.next_tab(); st.window.request_redraw(); return; }
