@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key, NamedKey};
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::{Window, WindowId as WinitWindowId};
@@ -251,6 +251,41 @@ enum LocalPointerState {
     Selecting,
 }
 
+/// The system clipboard together with the display handle it borrows from.
+///
+/// On Wayland, `Clipboard` holds a raw pointer into the event loop's display
+/// and joins a worker thread on drop. The display must therefore outlive the
+/// clipboard. Fields drop in declaration order: `clipboard` first (joining its
+/// thread), then `_display`, so the pointer stays valid for the clipboard's
+/// whole lifetime — including shutdown, after `run_app` has dropped the event
+/// loop. Keeping the pair in one type makes that ordering hard to break.
+struct SystemClipboard {
+    clipboard: Clipboard,
+    _display: OwnedDisplayHandle,
+}
+
+impl SystemClipboard {
+    fn new(event_loop: &ActiveEventLoop) -> Self {
+        let display = event_loop.owned_display_handle();
+        let clipboard = unsafe {
+            display
+                .display_handle()
+                .ok()
+                .map(|h| Clipboard::new(h.as_raw()))
+                .unwrap_or_default()
+        };
+        Self { clipboard, _display: display }
+    }
+
+    fn set(&mut self, ty: ClipboardType, text: impl Into<String>) {
+        self.clipboard.set(ty, text);
+    }
+
+    fn get(&mut self, ty: ClipboardType) -> String {
+        self.clipboard.get(ty)
+    }
+}
+
 struct AppState {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
@@ -268,7 +303,7 @@ struct AppState {
     cursor_pos: (f64, f64),
     mouse_buttons: [bool; 3], // left, middle, right
     local_pointer: LocalPointerState,
-    clipboard: Clipboard,
+    clipboard: SystemClipboard,
     geometry_locked: bool,
     /// (timestamp, text) of the transient "cols x rows" overlay shown after a resize.
     resize_overlay: Option<(Instant, String)>,
@@ -276,7 +311,7 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(window: Rc<Window>, surface: Surface<Rc<Window>, Rc<Window>>, tabs: Vec<Tab>, proxy: EventLoopProxy<UiEvent>, clipboard: Clipboard) -> Self {
+    fn new(window: Rc<Window>, surface: Surface<Rc<Window>, Rc<Window>>, tabs: Vec<Tab>, proxy: EventLoopProxy<UiEvent>, clipboard: SystemClipboard) -> Self {
         let mut st = Self {
             window, surface, tabs, active: 0, next_tab_id: 1,
             font: Font::from_bytes(CASCADIA_TTF, fontdue::FontSettings::default()).expect("font"),
@@ -1142,13 +1177,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
         let context = Context::new(window.clone()).unwrap();
         let surface = Surface::new(&context, window.clone()).unwrap();
 
-        let clipboard = unsafe {
-            event_loop
-                .display_handle()
-                .ok()
-                .map(|h| Clipboard::new(h.as_raw()))
-                .unwrap_or_default()
-        };
+        let clipboard = SystemClipboard::new(event_loop);
 
         // Build state first so real font metrics are available when the first tab is created.
         let mut st = AppState::new(window, surface, Vec::new(), self.proxy.clone(), clipboard);
