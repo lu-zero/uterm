@@ -26,6 +26,7 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - **Ctrl+Shift+Tab** / **Ctrl+PageUp**: previous tab
 - **Ctrl+Shift+C**: copy current selection to clipboard
 - **Ctrl+Shift+V**: paste clipboard into terminal
+- **Alt+Enter** (when a terminal tab is active): toggle window-size lock (`WindowEvent::Resized` still updates size when unlocked)
 - **Mouse click on tab**: switch tab
 - **Mouse click on tab close (×)**: close tab
 
@@ -48,7 +49,7 @@ On Linux the `clipboard`, `x11` and `wayland` features are enabled by default (f
 Terminal route IDs are `Tab.id` values and are used for tab-exit routing (`UiEvent::TabExited(id)`). This is a small embedded-terminal app, so integer IDs are sufficient.
 
 - Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
-- Basic local selection copy/paste and OSC 52 clipboard handling; no IME or xterm/kitty keyboard protocol
+- Basic local selection copy/paste and OSC 52 clipboard handling; no IME, xterm/kitty keyboard protocol, or clipboard popup on paste (plain `Ctrl+V` into terminal)
 - No scrollback UI and no rendered graphics protocols
 - Simple tab bar UI (titles and close buttons supported, but no tab reordering, dragging, or advanced widgets)
 
