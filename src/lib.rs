@@ -277,6 +277,17 @@ impl AppState {
         self.geometry_locked = !self.geometry_locked;
     }
 
+    /// Spawn a fresh, independent uterm window/process, inheriting our CLI args
+    /// so it opens with the same geometry/profile.
+    fn spawn_new_window(&self) {
+        let Ok(exe) = std::env::current_exe() else { return; };
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(std::env::args().skip(1));
+        if let Err(err) = cmd.spawn() {
+            eprintln!("uterm: failed to spawn a new window: {err}");
+        }
+    }
+
     fn set_geometry_from_size(&mut self, size: PhysicalSize<u32>) {
         // `size` and cell_w/cell_h are both physical pixels, so use it directly.
         let width = size.width as usize;
@@ -1186,6 +1197,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
                         let c = s.to_lowercase();
                         if c == "t" { st.new_tab(); st.window.request_redraw(); return; }
                         else if c == "w" { st.close_active_tab(event_loop); st.window.request_redraw(); return; }
+                        else if c == "n" && !k.repeat { st.spawn_new_window(); return; }
                         else if c == "c" { st.copy_selection(); return; }
                         else if c == "v" { st.paste_clipboard(); return; }
                     }
