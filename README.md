@@ -17,6 +17,8 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - Basic copy/paste integration for local selection and clipboard (`Ctrl+Shift+C` to copy selection, `Ctrl+Shift+V` to paste; bracketed paste used when enabled by the shell/app)
 - OSC 52 clipboard store/load integration (terminal apps can set/read clipboard via escape sequences, routed per tab)
 - Basic mouse reporting to the terminal (SGR/UTF-8 modes) for button, motion/drag, and wheel events when enabled by applications
+- Custom launch size via `--geometry WxH` (cells) or `--profile sh|mc|ssh`; an explicit geometry wins over a profile
+- New window via `Ctrl+Shift+N` (spawns an independent uterm process with the same arguments), preset sizes via `Ctrl+Shift+=`/`-`, and a transient `cols x rows` overlay during resizing
 
 ### Keybindings
 
@@ -26,6 +28,8 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - **Ctrl+Shift+Tab** / **Ctrl+PageUp**: previous tab
 - **Ctrl+Shift+C**: copy current selection to clipboard
 - **Ctrl+Shift+V**: paste clipboard into terminal
+- **Ctrl+Shift+N**: spawn a new window (independent process/PTY, same size)
+- **Ctrl+Shift+=** / **Ctrl+Shift+-**: cycle through pre-defined window sizes (clears the resize lock)
 - **Alt+Enter**: toggle window-size lock (while locked, `WindowEvent::Resized` no longer resizes the terminal grid)
 - **Mouse click on tab**: switch tab
 - **Mouse click on tab close (×)**: close tab
@@ -38,6 +42,9 @@ Requires a Rust toolchain.
 cargo run
 # or
 cargo run --release
+# with a specific size / profile:
+cargo run -- --geometry 128x40
+cargo run -- --profile mc
 ```
 
 `Cargo.lock` is not committed (library-style noise for this small app); dependency resolution comes from `Cargo.toml`.

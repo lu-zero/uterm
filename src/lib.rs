@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -38,6 +39,17 @@ const PROFILES: &[(&str, usize, usize)] = &[
     ("mc", 80, 24),
     ("ssh", 128, 40),
 ];
+
+/// Pre-defined window sizes (columns, rows) cycled with Ctrl+Shift+/-.
+const PRESET_SIZES: &[(usize, usize)] = &[
+    (80, 24),
+    (100, 30),
+    (128, 40),
+    (80, 25),
+    (120, 40),
+];
+
+const OVERLAY_TIMEOUT: Duration = Duration::from_millis(1400);
 
 fn parse_geometry(s: &str) -> Option<(usize, usize)> {
     let (cols, rows) = s.trim().split_once(['x', 'X'])?;
@@ -246,6 +258,9 @@ struct AppState {
     local_pointer: LocalPointerState,
     clipboard: Clipboard,
     geometry_locked: bool,
+    /// (timestamp, text) of the transient "cols x rows" overlay shown after a resize.
+    resize_overlay: Option<(Instant, String)>,
+    preset_index: usize,
 }
 
 impl AppState {
@@ -256,7 +271,7 @@ impl AppState {
             font_px: 14.0, cell_w: 8, cell_h: 16, ascent: 0.0,
             modifiers: Modifiers::default(), glyph_cache: HashMap::new(), proxy,
             cursor_pos: (0.0, 0.0), mouse_buttons: [false; 3], local_pointer: LocalPointerState::Idle,
-            clipboard, geometry_locked: false,
+            clipboard, geometry_locked: false, resize_overlay: None, preset_index: 0,
         };
         st.sync_font_metrics();
         st
@@ -286,6 +301,22 @@ impl AppState {
         if let Err(err) = cmd.spawn() {
             eprintln!("uterm: failed to spawn a new window: {err}");
         }
+    }
+
+    /// Apply a preset size in cells. An explicit size change clears the resize lock.
+    fn apply_preset(&mut self, direction: i32) {
+        let len = PRESET_SIZES.len() as i32;
+        self.preset_index = (self.preset_index as i32 + direction).rem_euclid(len) as usize;
+        self.geometry_locked = false;
+        let (cols, rows) = PRESET_SIZES[self.preset_index];
+        let width = (cols * self.cell_w) as u32;
+        let height = ((rows + 1) * self.cell_h) as u32;
+        let _ = self.window.request_inner_size(PhysicalSize::new(width, height));
+    }
+
+    fn show_resize_overlay(&mut self) {
+        let (cols, rows) = self.grid_dims();
+        self.resize_overlay = Some((Instant::now(), format!("{}x{}", cols, rows)));
     }
 
     fn set_geometry_from_size(&mut self, size: PhysicalSize<u32>) {
@@ -415,12 +446,13 @@ impl AppState {
         let Some(tab) = self.tabs.get(self.active) else { return; };
         let text = {
             let term = tab.terminal.lock();
-            let Some(range) = term.selection.as_ref().and_then(|s| s.to_range(&term)) else { return; };
-            term.bounds_to_string(range.start, range.end)
+            term.selection_to_string()
         };
-        if !text.is_empty() {
-            self.clipboard.set(ClipboardType::Clipboard, text.clone());
-            self.clipboard.set(ClipboardType::Selection, text);
+        if let Some(text) = text {
+            if !text.is_empty() {
+                self.clipboard.set(ClipboardType::Clipboard, text.clone());
+                self.clipboard.set(ClipboardType::Selection, text);
+            }
         }
     }
 
@@ -428,10 +460,7 @@ impl AppState {
         let Some(tab) = self.tabs.get(self.active) else { return; };
         let text = {
             let term = tab.terminal.lock();
-            term.selection
-                .as_ref()
-                .and_then(|s| s.to_range(&term))
-                .map(|range| term.bounds_to_string(range.start, range.end))
+            term.selection_to_string()
         };
         if let Some(text) = text {
             if !text.is_empty() {
@@ -522,6 +551,9 @@ impl AppState {
         self.ensure_glyph('×');
         for (label, _, _, _) in &tab_layouts {
             for ch in label.chars() { self.ensure_glyph(ch); }
+        }
+        if let Some((_, text)) = self.resize_overlay.clone() {
+            for ch in text.chars() { self.ensure_glyph(ch); }
         }
         for cell in &cells {
             if cell.ch != '\0' && cell.ch != ' ' { self.ensure_glyph(cell.ch); }
@@ -618,6 +650,28 @@ impl AppState {
                         }
                         _ => fill_rect_alpha(&mut buffer, bw, bh, px, py, self.cell_w, self.cell_h, cur_u, 110),
                     }
+                }
+            }
+        }
+
+        // Transient "cols x rows" overlay shown after a resize.
+        if let Some((_, text)) = &self.resize_overlay {
+            let n = text.chars().count();
+            let box_w = (n * self.cell_w + 6).min(bw);
+            let box_h = (self.cell_h + 4).min(bh);
+            let x0 = bw.saturating_sub(box_w + 6);
+            let y0 = bh.saturating_sub(box_h + 6).max(bar_h);
+            fill_rect(&mut buffer, bw, bh, x0, y0, box_w, box_h, rgb_u32(0x14, 0x18, 0x1f));
+            fill_rect(&mut buffer, bw, bh, x0, y0, box_w, 1, rgb_u32(0x6b, 0xb6, 0xff));
+            let mut cx = (x0 + 3) as i32;
+            for ch in text.chars() {
+                if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
+                    let gx = cx + metrics.xmin;
+                    let gy = y0 as i32 + 2 + self.ascent as i32 - metrics.ymin - metrics.height as i32;
+                    blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, rgb_u32(0xf0, 0xf4, 0xfa));
+                    cx += metrics.advance_width.ceil() as i32;
+                } else {
+                    cx += self.cell_w as i32;
                 }
             }
         }
@@ -1147,7 +1201,12 @@ impl ApplicationHandler<UiEvent> for Uterm {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => st.render(),
-            WindowEvent::Resized(size) => { st.set_geometry_from_size(size); st.window.request_redraw(); }
+            WindowEvent::Resized(size) => {
+                st.set_geometry_from_size(size);
+                st.show_resize_overlay();
+                event_loop.set_control_flow(ControlFlow::wait_duration(OVERLAY_TIMEOUT));
+                st.window.request_redraw();
+            }
             WindowEvent::ModifiersChanged(m) => { st.modifiers = m; }
             WindowEvent::CursorMoved { position, .. } => {
                 st.cursor_pos = (position.x, position.y);
@@ -1200,6 +1259,8 @@ impl ApplicationHandler<UiEvent> for Uterm {
                         else if c == "n" && !k.repeat { st.spawn_new_window(); return; }
                         else if c == "c" { st.copy_selection(); return; }
                         else if c == "v" { st.paste_clipboard(); return; }
+                        else if c == "=" || c == "+" { st.apply_preset(1); st.window.request_redraw(); return; }
+                        else if c == "-" || c == "_" { st.apply_preset(-1); st.window.request_redraw(); return; }
                     }
                     if matches!(k.logical_key, Key::Named(NamedKey::Tab)) { st.prev_tab(); st.window.request_redraw(); return; }
                 }
@@ -1221,6 +1282,17 @@ impl ApplicationHandler<UiEvent> for Uterm {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(st) = &mut self.state else { return; };
+        if let Some((since, _)) = st.resize_overlay {
+            if since.elapsed() >= OVERLAY_TIMEOUT {
+                st.resize_overlay = None;
+                st.window.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
         }
     }
 }
