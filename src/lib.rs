@@ -56,6 +56,18 @@ fn parse_geometry(s: &str) -> Option<(usize, usize)> {
     Some((cols.trim().parse::<usize>().ok()?, rows.trim().parse::<usize>().ok()?))
 }
 
+/// Command-style modifier for app shortcuts: Command on macOS, Ctrl+Shift elsewhere.
+fn is_command_modifier(mods: winit::keyboard::ModifiersState) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        mods.super_key()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        mods.control_key() && mods.shift_key()
+    }
+}
+
 /// Parse `--geometry WxH` and `--profile NAME` from process arguments.
 /// An explicit `--geometry` wins over a profile.
 fn parse_args() -> Option<StartupGeometry> {
@@ -1250,15 +1262,23 @@ impl ApplicationHandler<UiEvent> for Uterm {
                 let ctrl = mods.control_key();
                 let shift = mods.shift_key();
                 let alt = mods.alt_key();
+                let cmd = is_command_modifier(mods);
+
+                // Copy / paste / new-window: Command on macOS, Ctrl+Shift elsewhere.
+                if cmd {
+                    if let Key::Character(s) = &k.logical_key {
+                        let c = s.to_lowercase();
+                        if c == "c" { st.copy_selection(); return; }
+                        else if c == "v" { st.paste_clipboard(); return; }
+                        else if c == "n" && !k.repeat { st.spawn_new_window(); return; }
+                    }
+                }
 
                 if ctrl && shift {
                     if let Key::Character(s) = &k.logical_key {
                         let c = s.to_lowercase();
                         if c == "t" { st.new_tab(); st.window.request_redraw(); return; }
                         else if c == "w" { st.close_active_tab(event_loop); st.window.request_redraw(); return; }
-                        else if c == "n" && !k.repeat { st.spawn_new_window(); return; }
-                        else if c == "c" { st.copy_selection(); return; }
-                        else if c == "v" { st.paste_clipboard(); return; }
                         else if c == "=" || c == "+" { st.apply_preset(1); st.window.request_redraw(); return; }
                         else if c == "-" || c == "_" { st.apply_preset(-1); st.window.request_redraw(); return; }
                     }
