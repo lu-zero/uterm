@@ -59,6 +59,9 @@ impl AppState {
             return;
         }
         let bytes = encode_mouse_report(button, col, row, pressed, sgr, utf8);
+        if std::env::var_os("UTERM_MOUSE_DEBUG").is_some() {
+            eprintln!("mouse report: {bytes:?} (sgr={sgr}, utf8={utf8})");
+        }
         let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
     }
 
@@ -80,21 +83,13 @@ impl AppState {
         if !report_motion && !(report_drag && any_button) {
             return;
         }
-        // While scrolling, represent the held-drag state in addition to the wheel
-        // button motion: 32 + button (drag) + 32 (wheel/motion base).
-        let mut base = if any_button {
-            if self.mouse_buttons[0] {
-                32
-            } else if self.mouse_buttons[1] {
-                33
-            } else {
-                34
-            }
-        } else {
-            35
-        };
-        base += 32;
-        let bytes = encode_mouse_report(base, col, row, true, sgr, utf8);
+        let button = motion_button(
+            sgr,
+            self.mouse_buttons[0],
+            self.mouse_buttons[1],
+            self.mouse_buttons[2],
+        );
+        let bytes = encode_mouse_report(button, col, row, true, sgr, utf8);
         let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
     }
 
@@ -122,6 +117,13 @@ impl AppState {
         event_loop: &ActiveEventLoop,
     ) {
         let (x, y) = self.cursor_pos;
+        if std::env::var_os("UTERM_MOUSE_DEBUG").is_some() {
+            let cell = self.terminal_cell_at(x, y).map(|(col, row, _)| (col, row));
+            eprintln!(
+                "mouse {button:?} {state:?}: pos=({x:.1},{y:.1}) cell={}x{} -> {cell:?}",
+                self.cell_w, self.cell_h
+            );
+        }
         if state == ElementState::Pressed && button == MouseButton::Left {
             if let Some((idx, close)) = self.tab_bar_hit(x, y) {
                 if close {
@@ -231,6 +233,24 @@ impl AppState {
     }
 }
 
+/// Drag/motion button parameter. SGR (1006) encodes drags as 32..=34 and
+/// plain motion as 35; the older X10/UTF-8 protocols add another 32.
+fn motion_button(sgr: bool, left: bool, middle: bool, right: bool) -> u8 {
+    let mut button = if left {
+        32
+    } else if middle {
+        33
+    } else if right {
+        34
+    } else {
+        35
+    };
+    if !sgr {
+        button += 32;
+    }
+    button
+}
+
 pub(crate) fn encode_mouse_report(
     button: u8,
     col: u16,
@@ -336,7 +356,30 @@ fn function_key_bytes(n: u8, shift: bool, alt: bool, ctrl: bool) -> Option<Vec<u
     })
 }
 
-pub(crate) fn key_to_bytes(k: &winit::event::KeyEvent, modifiers: Modifiers) -> Option<Vec<u8>> {
+/// Cursor keys use SS3 when the application enabled DECCKM (`?1h`), matching
+/// xterm's terminfo (`kcuu1=\EOA`). Otherwise they use CSI.
+fn cursor_key_bytes(key: NamedKey, app_cursor: bool) -> Option<Vec<u8>> {
+    let final_byte = match key {
+        NamedKey::ArrowUp => b'A',
+        NamedKey::ArrowDown => b'B',
+        NamedKey::ArrowRight => b'C',
+        NamedKey::ArrowLeft => b'D',
+        NamedKey::Home => b'H',
+        NamedKey::End => b'F',
+        _ => return None,
+    };
+    Some(if app_cursor {
+        vec![0x1b, b'O', final_byte]
+    } else {
+        vec![0x1b, b'[', final_byte]
+    })
+}
+
+pub(crate) fn key_to_bytes(
+    k: &winit::event::KeyEvent,
+    modifiers: Modifiers,
+    app_cursor: bool,
+) -> Option<Vec<u8>> {
     let ctrl = modifiers.state().control_key();
     let alt = modifiers.state().alt_key();
     if let Key::Named(key) = k.logical_key {
@@ -405,12 +448,14 @@ pub(crate) fn key_to_bytes(k: &winit::event::KeyEvent, modifiers: Modifiers) -> 
                 Some(b" ".to_vec())
             }
         }
-        Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
-        Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
-        Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
-        Key::Named(NamedKey::ArrowLeft) => Some(b"\x1b[D".to_vec()),
-        Key::Named(NamedKey::Home) => Some(b"\x1b[H".to_vec()),
-        Key::Named(NamedKey::End) => Some(b"\x1b[F".to_vec()),
+        Key::Named(
+            named @ (NamedKey::ArrowUp
+            | NamedKey::ArrowDown
+            | NamedKey::ArrowRight
+            | NamedKey::ArrowLeft
+            | NamedKey::Home
+            | NamedKey::End),
+        ) => cursor_key_bytes(*named, app_cursor),
         Key::Named(NamedKey::PageUp) => Some(b"\x1b[5~".to_vec()),
         Key::Named(NamedKey::PageDown) => Some(b"\x1b[6~".to_vec()),
         Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
@@ -420,8 +465,62 @@ pub(crate) fn key_to_bytes(k: &winit::event::KeyEvent, modifiers: Modifiers) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{function_key_bytes, function_key_index};
+    use super::{
+        cursor_key_bytes, encode_mouse_report, function_key_bytes, function_key_index,
+        motion_button,
+    };
     use winit::keyboard::NamedKey;
+
+    #[test]
+    fn cursor_keys_follow_application_cursor_mode() {
+        assert_eq!(
+            cursor_key_bytes(NamedKey::ArrowUp, false).as_deref(),
+            Some(&b"\x1b[A"[..])
+        );
+        assert_eq!(
+            cursor_key_bytes(NamedKey::ArrowUp, true).as_deref(),
+            Some(&b"\x1bOA"[..])
+        );
+        assert_eq!(
+            cursor_key_bytes(NamedKey::ArrowLeft, true).as_deref(),
+            Some(&b"\x1bOD"[..])
+        );
+        assert_eq!(
+            cursor_key_bytes(NamedKey::Home, true).as_deref(),
+            Some(&b"\x1bOH"[..])
+        );
+        assert!(cursor_key_bytes(NamedKey::Enter, true).is_none());
+    }
+
+    #[test]
+    fn motion_button_matches_the_reporting_protocol() {
+        assert_eq!(motion_button(true, true, false, false), 32);
+        assert_eq!(motion_button(true, false, false, false), 35);
+        assert_eq!(motion_button(false, true, false, false), 64);
+        assert_eq!(motion_button(false, false, false, false), 67);
+    }
+
+    #[test]
+    fn mouse_reports_use_x10_and_sgr_encoding() {
+        // SGR (1006): 1-based coordinates, M for press and m for release.
+        assert_eq!(
+            encode_mouse_report(0, 9, 4, true, true, false),
+            b"\x1b[<0;10;5M"
+        );
+        assert_eq!(
+            encode_mouse_report(2, 9, 4, false, true, false),
+            b"\x1b[<2;10;5m"
+        );
+        // X10: 32 + button, with bit 2 set on release.
+        assert_eq!(
+            encode_mouse_report(0, 0, 0, true, false, false),
+            b"\x1b[M !!"
+        );
+        assert_eq!(
+            encode_mouse_report(0, 0, 0, false, false, false),
+            b"\x1b[M#!!"
+        );
+    }
 
     #[test]
     fn function_keys_match_xterm_terminfo() {

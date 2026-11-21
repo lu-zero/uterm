@@ -6,6 +6,7 @@ use crate::event::Listener;
 use crate::event::UiEvent;
 use crate::terminal::{cells_to_px, Tab};
 use fontdue::Font;
+use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
 use softbuffer::{Context, Surface};
 use std::borrow::Cow;
@@ -284,7 +285,18 @@ impl ApplicationHandler<UiEvent> for Uterm {
                     }
                 }
 
-                if let Some(bytes) = key_to_bytes(&k, st.modifiers) {
+                let app_cursor = st
+                    .tabs
+                    .get(st.active)
+                    .map(|tab| tab.terminal.lock().mode().contains(Mode::APP_CURSOR))
+                    .unwrap_or(false);
+                if let Some(bytes) = key_to_bytes(&k, st.modifiers, app_cursor) {
+                    if std::env::var_os("UTERM_KEY_DEBUG").is_some() {
+                        eprintln!(
+                            "key {:?}: {:?} (app_cursor={app_cursor})",
+                            k.logical_key, bytes
+                        );
+                    }
                     if let Some(tab) = st.tabs.get(st.active) {
                         let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
                     }
