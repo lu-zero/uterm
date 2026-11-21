@@ -17,3 +17,4 @@ fontdue = "0.9"
 fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+winnow-args = "0.6"

@@ -37,8 +37,8 @@ pub fn run() -> Result<(), Error> {
         config,
         list_fonts,
     } = match cli::parse_args()? {
-        Startup::Help => {
-            print_lines(cli::help_text().lines());
+        Startup::Help(text) => {
+            print_lines(text.lines());
             return Ok(());
         }
         Startup::Run(options) => options,

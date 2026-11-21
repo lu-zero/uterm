@@ -1,7 +1,9 @@
 // Command-line/startup configuration parsing.
 
 use crate::error::Error;
+use std::ffi::OsStr;
 use std::path::PathBuf;
+use winnow_args::{help, Args, ErrorKind};
 
 /// A requested terminal geometry in character cells (columns x rows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,20 +24,35 @@ pub(crate) struct RunOptions {
 
 #[derive(Debug)]
 pub(crate) enum Startup {
-    Help,
+    /// Help or version text, already rendered.
+    Help(String),
     Run(RunOptions),
 }
 
-pub(crate) fn help_text() -> &'static str {
-    r#"uterm: a tiny terminal
-  --geometry WxH   terminal size in cells (e.g. 128x40)
-  --profile NAME   sh, mc, ssh, or a name from config.toml
-  --config PATH    fonts and profiles (default: ~/.config/uterm/config.toml)
-  --list-fonts     print bundled and installed font families
-  Ctrl+Shift+T/W    new/close tab
-  Ctrl+Shift+C/V    copy/paste
-  Ctrl+Shift+N      new window
-  Alt+Enter         toggle resize lock"#
+const KEYBINDINGS: &str = "Ctrl+Shift+T/W  new/close tab\nCtrl+Shift+C/V  copy/paste\nCtrl+Shift+N    new window\nAlt+Enter       toggle resize lock";
+
+/// A tiny terminal.
+#[derive(Args, Debug)]
+#[arg(name = "uterm", after_help = KEYBINDINGS)]
+struct Cli {
+    /// Terminal size in cells, e.g. `128x40`.
+    #[arg(long, value_name = "WxH", parse_with = geometry_value)]
+    geometry: Option<StartupGeometry>,
+    /// `sh`, `mc`, `ssh`, or a name from config.toml.
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
+    /// Fonts and profiles (default: `~/.config/uterm/config.toml`).
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+    /// Print bundled and installed font families.
+    #[arg(long)]
+    list_fonts: bool,
+}
+
+fn geometry_value(value: &str) -> Result<StartupGeometry, String> {
+    parse_geometry(value)
+        .map(|(cols, rows)| StartupGeometry { cols, rows })
+        .map_err(|err| err.to_string())
 }
 
 const PROFILES: &[(&str, usize, usize)] = &[("sh", 80, 25), ("mc", 80, 24), ("ssh", 128, 40)];
@@ -82,66 +99,31 @@ pub(crate) fn is_command_modifier(mods: winit::keyboard::ModifiersState) -> bool
     }
 }
 
-/// Parse `--geometry WxH` and `--profile NAME` from process arguments.
-/// An explicit `--geometry` is returned as geometry. The profile name is
-/// returned as given; built-in and `config.toml` sizes are applied in `config`.
+/// Parse the process arguments, after the program name.
 pub(crate) fn parse_args() -> Result<Startup, Error> {
-    let args: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
-    parse_args_from(&args)
+    parse_args_from(std::env::args_os().skip(1))
 }
 
-pub(crate) fn parse_args_from(args: &[String]) -> Result<Startup, Error> {
-    let mut geometry = None;
-    let mut profile = None;
-    let mut config = None;
-    let mut list_fonts = false;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i].as_str();
-        if arg == "--help" || arg == "-h" {
-            return Ok(Startup::Help);
-        }
-        if arg == "--list-fonts" {
-            list_fonts = true;
-            i += 1;
-            continue;
-        }
-
-        // Both `--flag=value` and `--flag value` reduce to a key and value.
-        let (key, inline) = arg.split_once('=').unwrap_or((arg, ""));
-        let takes_value = matches!(key, "--geometry" | "--profile" | "--config");
-        let value = if !inline.is_empty() {
-            inline
-        } else if takes_value {
-            args.get(i + 1)
-                .map(String::as_str)
-                .ok_or_else(|| Error::Usage(format!("missing value for {key}")))?
-        } else {
-            return Err(Error::Usage(format!("unexpected argument `{arg}`")));
-        };
-        if takes_value {
-            i += 1;
-        }
-        match key {
-            "--geometry" => {
-                let (cols, rows) = parse_geometry(value)?;
-                geometry = Some((cols, rows));
+pub(crate) fn parse_args_from<S: AsRef<OsStr>>(
+    args: impl IntoIterator<Item = S>,
+) -> Result<Startup, Error> {
+    match Cli::parse_from(args) {
+        Ok(cli) => Ok(Startup::Run(RunOptions {
+            geometry: cli.geometry,
+            profile: cli.profile,
+            config: cli.config,
+            list_fonts: cli.list_fonts,
+        })),
+        Err(err) => match err.kind() {
+            ErrorKind::HelpRequested => {
+                Ok(Startup::Help(err.render_help("uterm").unwrap_or_default()))
             }
-            "--profile" => profile = Some(value.to_owned()),
-            "--config" => config = Some(PathBuf::from(value)),
-            _ => return Err(Error::Usage(format!("unexpected argument `{arg}`"))),
-        }
-        i += 1;
+            ErrorKind::VersionRequested => {
+                Ok(Startup::Help(err.version_text("uterm").unwrap_or_default()))
+            }
+            _ => Err(Error::Usage(err.render(help::Style::PLAIN))),
+        },
     }
-    Ok(Startup::Run(RunOptions {
-        geometry: geometry.map(|(cols, rows)| StartupGeometry { cols, rows }),
-        profile,
-        config,
-        list_fonts,
-    }))
 }
 
 #[cfg(test)]
@@ -162,8 +144,7 @@ mod tests {
 
     #[test]
     fn profile_name_is_left_for_the_config() {
-        let Startup::Run(options) = parse_args_from(&["--profile".into(), "mc".into()]).unwrap()
-        else {
+        let Startup::Run(options) = parse_args_from(["--profile", "mc"]).unwrap() else {
             panic!("help");
         };
         assert!(options.geometry.is_none());
@@ -172,7 +153,7 @@ mod tests {
 
     #[test]
     fn zero_geometry_is_an_error() {
-        let err = parse_args_from(&["--geometry".into(), "0x1".into()]).unwrap_err();
+        let err = parse_args_from(["--geometry", "0x1"]).unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains("0x1") || message.contains("invalid"),
