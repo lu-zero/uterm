@@ -14,3 +14,5 @@ rio-vt = { version = "0.5", default-features = true }
 winit = "0.30"
 softbuffer = "0.4"
 fontdue = "0.9"
+serde = { version = "1", features = ["derive"] }
+toml = "1"

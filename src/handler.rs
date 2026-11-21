@@ -5,6 +5,7 @@ use crate::error::Error;
 use crate::event::Listener;
 use crate::event::UiEvent;
 use crate::terminal::{cells_to_px, Tab};
+use fontdue::Font;
 use rio_vt::event::Msg;
 use softbuffer::{Context, Surface};
 use std::borrow::Cow;
@@ -20,6 +21,7 @@ pub(crate) struct Uterm {
     pub(crate) proxy: EventLoopProxy<UiEvent>,
     pub(crate) state: Option<AppState>,
     pub(crate) geometry: Option<StartupGeometry>,
+    pub(crate) fonts: Vec<Font>,
     pub(crate) error: Option<Error>,
 }
 
@@ -45,7 +47,15 @@ impl Uterm {
         let clipboard = SystemClipboard::new(event_loop);
 
         // Build state first so real font metrics are available when the first tab is created.
-        let mut st = AppState::new(window, surface, Vec::new(), self.proxy.clone(), clipboard)?;
+        let fonts = std::mem::take(&mut self.fonts);
+        let mut st = AppState::new(
+            window,
+            surface,
+            Vec::new(),
+            self.proxy.clone(),
+            clipboard,
+            fonts,
+        )?;
 
         let (cols, rows) = if let Some(g) = self.geometry {
             // Request the exact terminal pixel size (plus one row for the tab bar).

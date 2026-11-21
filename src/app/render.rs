@@ -2,6 +2,7 @@ use super::AppState;
 use crate::draw::{
     blit_glyph, fill_rect, fill_rect_alpha, is_selected, resolve_ansi_color, resolve_named, rgb_u32,
 };
+use fontdue::Font;
 use rio_vt::ansi::CursorShape;
 use rio_vt::config::colors::NamedColor;
 use rio_vt::crosswords::grid::Dimensions;
@@ -14,18 +15,37 @@ struct CellRender {
     bg: u32,
 }
 
+/// First face that has `ch` and paints ink. The index is that face in `fonts`.
+pub(crate) fn rasterize_from(
+    fonts: &[Font],
+    px: f32,
+    ch: char,
+) -> Option<(usize, fontdue::Metrics, Vec<u8>)> {
+    let (index, font) = fonts
+        .iter()
+        .enumerate()
+        .find(|(_, font)| font.has_glyph(ch))?;
+    let (metrics, bitmap) = font.rasterize(ch, px);
+    if metrics.advance_width > 0.0 && metrics.height > 0 && bitmap.iter().any(|&a| a > 0) {
+        Some((index, metrics, bitmap))
+    } else {
+        None
+    }
+}
+
 impl AppState {
-    pub(crate) fn glyph_is_drawable(&self, ch: char) -> bool {
-        let (metrics, bitmap) = self.font.rasterize(ch, self.font_px);
-        metrics.advance_width > 0.0 && metrics.height > 0 && bitmap.iter().any(|&a| a > 0)
+    fn rasterize_char(&self, ch: char) -> Option<(fontdue::Metrics, Vec<u8>)> {
+        let (_face, metrics, bitmap) = rasterize_from(&self.fonts, self.font_px, ch)?;
+        Some((metrics, bitmap))
     }
 
     pub(crate) fn ensure_glyph(&mut self, ch: char) {
-        if self.glyph_cache.contains_key(&ch) || !self.glyph_is_drawable(ch) {
+        if self.glyph_cache.contains_key(&ch) {
             return;
         }
-        let raster = self.font.rasterize(ch, self.font_px);
-        self.glyph_cache.insert(ch, raster);
+        if let Some(raster) = self.rasterize_char(ch) {
+            self.glyph_cache.insert(ch, raster);
+        }
     }
 
     pub(crate) fn render(&mut self) {
@@ -406,5 +426,76 @@ impl AppState {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rasterize_from;
+    use crate::config::bundled_font;
+    use crate::draw::blit_glyph;
+    use fontdue::{Font, Metrics};
+
+    fn cell_width(font: &Font, px: f32) -> (usize, f32) {
+        let (metrics, _) = font.rasterize('M', px);
+        let width = metrics.advance_width.ceil().max(1.0) as usize;
+        (width, metrics.advance_width)
+    }
+
+    #[test]
+    fn cascadia_paints_latin_and_ukrainian_and_skips_japanese() {
+        let font = bundled_font().unwrap();
+        let fonts = [font];
+        let px = 32.0;
+        let (_cell_w, m_advance) = cell_width(&fonts[0], px);
+        for ch in ['A', 'Z', 'ї', 'є', 'і', 'ґ', 'ш', 'Є'] {
+            let (face, metrics, _) = rasterize_from(&fonts, px, ch).unwrap_or_else(|| {
+                panic!("U+{:04X} {ch} has no ink in Cascadia", ch as u32);
+            });
+            assert_eq!(face, 0);
+            assert!(
+                (metrics.advance_width - m_advance).abs() < 0.01,
+                "{ch} advance {} vs M {m_advance}",
+                metrics.advance_width
+            );
+        }
+        assert!(rasterize_from(&fonts, px, '日').is_none());
+        assert!(rasterize_from(&fonts, px, 'あ').is_none());
+    }
+
+    #[test]
+    fn a_wide_bitmap_continues_into_the_next_cell() {
+        let font = bundled_font().unwrap();
+        let (cell_w, _) = cell_width(&font, 32.0);
+        let metrics = Metrics {
+            width: cell_w * 3,
+            height: cell_w,
+            advance_width: (cell_w * 2) as f32,
+            ..Metrics::default()
+        };
+        let bitmap = vec![255u8; metrics.width * metrics.height];
+        let (bw, bh) = (cell_w * 5, cell_w);
+        let mut buf = vec![0u32; bw * bh];
+        // Column 2 starts here; a three-cell-wide glyph spills into columns 3 and 4.
+        blit_glyph(
+            &mut buf,
+            bw,
+            bh,
+            (cell_w * 2) as i32,
+            0,
+            &metrics,
+            &bitmap,
+            0x00ff_ffff,
+        );
+        let has_ink = |from: usize, to: usize| {
+            buf.chunks(bw)
+                .any(|row| row[from..to].iter().any(|&p| p != 0))
+        };
+        assert!(has_ink(cell_w * 2, cell_w * 3), "ink in its own cell");
+        assert!(has_ink(cell_w * 3, cell_w * 4), "ink in the next cell");
+        assert!(
+            has_ink(cell_w * 4, cell_w * 5),
+            "ink in the cell after that"
+        );
     }
 }

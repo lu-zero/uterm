@@ -23,7 +23,6 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::Window;
 
-pub(crate) const CASCADIA_TTF: &[u8] = include_bytes!("../../CascadiaCodeNF.ttf");
 pub(crate) const OVERLAY_TIMEOUT: Duration = Duration::from_millis(1400);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,7 +75,8 @@ pub(crate) struct AppState {
     pub(crate) tabs: Vec<Tab>,
     pub(crate) active: usize,
     pub(crate) next_tab_id: usize,
-    pub(crate) font: Font,
+    /// Faces in fallback order. The first face sets the cell size.
+    pub(crate) fonts: Vec<Font>,
     pub(crate) font_px: f32,
     pub(crate) cell_w: usize,
     pub(crate) cell_h: usize,
@@ -101,15 +101,18 @@ impl AppState {
         tabs: Vec<Tab>,
         proxy: EventLoopProxy<UiEvent>,
         clipboard: SystemClipboard,
+        fonts: Vec<Font>,
     ) -> Result<Self, Error> {
+        if fonts.is_empty() {
+            return Err(Error::Font("no font configured".to_string()));
+        }
         let mut st = Self {
             window,
             surface,
             tabs,
             active: 0,
             next_tab_id: 1,
-            font: Font::from_bytes(CASCADIA_TTF, fontdue::FontSettings::default())
-                .map_err(Error::Font)?,
+            fonts,
             font_px: 14.0,
             cell_w: 8,
             cell_h: 16,
@@ -132,11 +135,11 @@ impl AppState {
     pub(crate) fn sync_font_metrics(&mut self) -> Result<(), Error> {
         let scale = self.window.scale_factor() as f32;
         let font_px = (14.0 * scale * (96.0 / 72.0)).round().max(12.0);
-        let lm = self
-            .font
+        let primary = &self.fonts[0];
+        let lm = primary
             .horizontal_line_metrics(font_px)
             .ok_or(Error::FontMetrics(font_px))?;
-        let (m_m, _) = self.font.rasterize('M', font_px);
+        let (m_m, _) = primary.rasterize('M', font_px);
         self.font_px = font_px;
         self.cell_w = m_m.advance_width.ceil().max(1.0) as usize;
         self.cell_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as usize;
