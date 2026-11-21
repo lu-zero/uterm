@@ -36,6 +36,7 @@ pub fn run() -> Result<(), Error> {
         profile,
         config,
         list_fonts,
+        command,
     } = match cli::parse_args()? {
         Startup::Help(text) => {
             print_lines(text.lines());
@@ -63,6 +64,7 @@ pub fn run() -> Result<(), Error> {
         fonts,
         font_size,
         font_family,
+        command,
         error: None,
     };
     event_loop.run_app(&mut app)?;

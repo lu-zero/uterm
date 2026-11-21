@@ -20,6 +20,8 @@ pub(crate) struct RunOptions {
     pub(crate) profile: Option<String>,
     pub(crate) config: Option<PathBuf>,
     pub(crate) list_fonts: bool,
+    /// Words after `--`, run as a command instead of the default shell.
+    pub(crate) command: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -29,11 +31,14 @@ pub(crate) enum Startup {
     Run(RunOptions),
 }
 
-const KEYBINDINGS: &str = "Ctrl+Shift+T/W  new/close tab\nCtrl+Shift+C/V  copy/paste\nCtrl+Shift+N    new window\nAlt+Enter       toggle resize lock";
-
 /// A tiny terminal.
+///
+/// `Ctrl+Shift+T/W`  *new/close tab*
+/// `Ctrl+Shift+C/V`  *copy/paste*
+/// `Ctrl+Shift+N`    *new window*
+/// `Alt+Enter`       *toggle resize lock*
 #[derive(Args, Debug)]
-#[arg(name = "uterm", after_help = KEYBINDINGS)]
+#[arg(name = "uterm", verbatim_doc_comment)]
 struct Cli {
     /// Terminal size in cells, e.g. `128x40`.
     #[arg(long, value_name = "WxH", parse_with = geometry_value)]
@@ -47,6 +52,9 @@ struct Cli {
     /// Print bundled and installed font families.
     #[arg(long)]
     list_fonts: bool,
+    /// Run this command instead of the default shell.
+    #[arg(positional, double_dash = "required", value_name = "ARG")]
+    command: Vec<String>,
 }
 
 fn geometry_value(value: &str) -> Result<StartupGeometry, String> {
@@ -113,6 +121,7 @@ pub(crate) fn parse_args_from<S: AsRef<OsStr>>(
             profile: cli.profile,
             config: cli.config,
             list_fonts: cli.list_fonts,
+            command: cli.command,
         })),
         Err(err) => match err.kind() {
             ErrorKind::HelpRequested => Ok(Startup::Help(
@@ -150,6 +159,17 @@ mod tests {
         };
         assert!(options.geometry.is_none());
         assert_eq!(options.profile.as_deref(), Some("mc"));
+    }
+
+    #[test]
+    fn trailing_words_after_double_dash_are_the_command() {
+        let Startup::Run(options) =
+            parse_args_from(["--profile", "mc", "--", "mc", "-d", "--flag"]).unwrap()
+        else {
+            panic!("help");
+        };
+        assert_eq!(options.profile.as_deref(), Some("mc"));
+        assert_eq!(options.command, ["mc", "-d", "--flag"]);
     }
 
     #[test]

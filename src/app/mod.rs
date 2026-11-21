@@ -79,6 +79,8 @@ pub(crate) struct AppState {
     pub(crate) fonts: Vec<Font>,
     /// The face whose family is preferred when looking for a fallback.
     pub(crate) font_family: String,
+    /// Command from `--`, used for every tab instead of the default shell.
+    pub(crate) command: Vec<String>,
     /// Point size from the config, before DPI scaling.
     pub(crate) font_size: f32,
     pub(crate) font_px: f32,
@@ -110,6 +112,7 @@ impl AppState {
         fonts: Vec<Font>,
         font_size: f32,
         font_family: String,
+        command: Vec<String>,
     ) -> Result<Self, Error> {
         if fonts.is_empty() {
             return Err(Error::Font("no font configured".to_string()));
@@ -122,6 +125,7 @@ impl AppState {
             next_tab_id: 1,
             fonts,
             font_family,
+            command,
             font_size,
             font_px: font_size,
             cell_w: 8,

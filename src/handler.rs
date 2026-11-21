@@ -26,6 +26,7 @@ pub(crate) struct Uterm {
     pub(crate) fonts: Vec<Font>,
     pub(crate) font_size: f32,
     pub(crate) font_family: String,
+    pub(crate) command: Vec<String>,
     pub(crate) error: Option<Error>,
 }
 
@@ -61,6 +62,7 @@ impl Uterm {
             fonts,
             self.font_size,
             std::mem::take(&mut self.font_family),
+            std::mem::take(&mut self.command),
         )?;
 
         let (cols, rows) = if let Some(g) = self.geometry {
@@ -81,7 +83,7 @@ impl Uterm {
         let listener = Listener {
             proxy: self.proxy.clone(),
         };
-        let first = Tab::new(0, cols, rows, st.cell_w, st.cell_h, listener)?;
+        let first = Tab::new(0, cols, rows, st.cell_w, st.cell_h, listener, &st.command)?;
         st.tabs.push(first);
 
         st.sync_window_title();

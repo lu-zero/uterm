@@ -68,6 +68,7 @@ impl Tab {
         cell_w: usize,
         cell_h: usize,
         listener: Listener,
+        command: &[String],
     ) -> Result<Self, Error> {
         let (cols_u16, rows_u16) = checked_grid(cols, rows)?;
         let cols = usize::from(cols_u16);
@@ -83,9 +84,13 @@ impl Tab {
         let cwd = std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().into_owned());
+        let (program, args) = match command.split_first() {
+            Some((program, args)) => (Some(program.as_str()), args.to_vec()),
+            None => (None, Vec::new()),
+        };
         let pty = rio_vt::teletypewriter::create_pty_with_spawn(
-            None,
-            Vec::new(),
+            program,
+            args,
             &cwd,
             None,
             cols_u16,

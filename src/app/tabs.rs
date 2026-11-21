@@ -48,7 +48,15 @@ impl AppState {
             proxy: self.proxy.clone(),
         };
         let id = self.next_tab_id;
-        let tab = Tab::new(id, cols, rows, self.cell_w, self.cell_h, listener)?;
+        let tab = Tab::new(
+            id,
+            cols,
+            rows,
+            self.cell_w,
+            self.cell_h,
+            listener,
+            &self.command,
+        )?;
         self.next_tab_id += 1;
         self.tabs.push(tab);
         self.select_tab(self.tabs.len() - 1);
