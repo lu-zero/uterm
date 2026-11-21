@@ -91,29 +91,69 @@ pub(crate) fn discover(primary_family: &str, ch: char) -> Vec<(Vec<u8>, u32)> {
                 SourceCache::new(SourceCacheOptions::default()),
             )
         });
-        let mut query = collection.query(cache);
-        query.set_families([
-            QueryFamily::Named(primary_family),
-            QueryFamily::Generic(GenericFamily::Monospace),
-            QueryFamily::Generic(GenericFamily::SystemUi),
-            QueryFamily::Generic(GenericFamily::SansSerif),
-        ]);
-        query.set_fallbacks(FallbackKey::new(script_of(ch), None));
+        let script = script_of(ch);
+        // Simplified and Traditional Chinese need script-specific hints;
+        // the generic Hani hint can miss simplified-only codepoints.
+        let mut scripts = vec![script];
+        if script == Script::from_bytes(*b"Hani") {
+            scripts.extend([Script::from_bytes(*b"Hans"), Script::from_bytes(*b"Hant")]);
+        }
 
         let mut candidates = Vec::new();
-        query.matches_with(|font| {
-            if candidates.len() >= 8 {
-                return QueryStatus::Stop;
+        for hint in scripts {
+            let mut query = collection.query(cache);
+            query.set_families([
+                QueryFamily::Named(primary_family),
+                QueryFamily::Generic(GenericFamily::Monospace),
+                QueryFamily::Generic(GenericFamily::SystemUi),
+                QueryFamily::Generic(GenericFamily::SansSerif),
+            ]);
+            query.set_fallbacks(FallbackKey::new(hint, None));
+            query.matches_with(|font| {
+                if candidates.len() >= 8 {
+                    return QueryStatus::Stop;
+                }
+                if font
+                    .charmap()
+                    .and_then(|charmap| charmap.map(ch))
+                    .is_some_and(|glyph| glyph != 0)
+                {
+                    candidates.push((font.blob.as_ref().to_vec(), font.index));
+                }
+                QueryStatus::Continue
+            });
+            drop(query);
+            if !candidates.is_empty() {
+                break;
             }
-            if font
-                .charmap()
-                .and_then(|charmap| charmap.map(ch))
-                .is_some_and(|glyph| glyph != 0)
-            {
-                candidates.push((font.blob.as_ref().to_vec(), font.index));
+        }
+
+        // The script hint can miss a codepoint (e.g. simplified 码 under
+        // Hani). Fall back to scanning every installed face once.
+        if candidates.is_empty() {
+            let ids: Vec<_> = collection.family_ids().collect();
+            'families: for id in ids {
+                let Some(info) = collection.family(id) else {
+                    continue;
+                };
+                for font in info.fonts() {
+                    let Some(blob) = font.load(Some(cache)) else {
+                        continue;
+                    };
+                    if font
+                        .charmap_index()
+                        .charmap(blob.as_ref())
+                        .and_then(|charmap| charmap.map(ch))
+                        .is_some_and(|glyph| glyph != 0)
+                    {
+                        candidates.push((blob.as_ref().to_vec(), font.index()));
+                        if candidates.len() >= 8 {
+                            break 'families;
+                        }
+                    }
+                }
             }
-            QueryStatus::Continue
-        });
+        }
         candidates
     })
 }
@@ -163,6 +203,21 @@ mod tests {
         assert!(candidates.iter().any(|(bytes, index)| {
             font_from(bytes, *index, "discovered")
                 .map(|face| face.has_glyph('日'))
+                .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn discovery_finds_codepoints_the_script_hint_misses() {
+        // 码 (U+7801) is simplified Chinese; the Hani hint can return nothing.
+        let candidates = discover(MAPLE_FAMILY, '码');
+        assert!(!candidates.is_empty());
+        assert!(candidates.iter().any(|(bytes, index)| {
+            font_from(bytes, *index, "discovered")
+                .map(|face| {
+                    let (metrics, bitmap) = face.rasterize('码', 18.0);
+                    metrics.width > 0 && bitmap.iter().any(|&a| a > 0)
+                })
                 .unwrap_or(false)
         }));
     }
