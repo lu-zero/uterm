@@ -53,7 +53,8 @@ pub fn run() -> Result<(), Error> {
         fonts,
         font_size,
         font_family,
-    } = config::load(config.as_deref(), profile.as_deref(), geometry)?;
+        command,
+    } = config::load(config.as_deref(), profile.as_deref(), geometry, command)?;
     let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();

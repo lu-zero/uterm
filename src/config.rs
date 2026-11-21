@@ -47,6 +47,10 @@ struct ProfileFile {
     fonts: Option<Vec<String>>,
     #[serde(default)]
     font_size: Option<f32>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
 }
 
 /// One entry in a font list: a bundled keyword, a file path, or an installed
@@ -69,7 +73,11 @@ struct ParsedProfile {
     geometry: Option<StartupGeometry>,
     fonts: Option<Vec<FontSource>>,
     font_size: Option<f32>,
+    /// Program and arguments, or empty for the default login shell.
+    command: Vec<String>,
 }
+
+type Resolved = (Vec<FontSource>, Option<StartupGeometry>, f32, Vec<String>);
 
 #[derive(Debug)]
 pub(crate) struct Session {
@@ -78,15 +86,19 @@ pub(crate) struct Session {
     pub(crate) font_size: f32,
     /// The first face's family, used as the preferred family for fallback.
     pub(crate) font_family: String,
+    /// Program and arguments, or empty for the default login shell.
+    pub(crate) command: Vec<String>,
 }
 
 pub(crate) fn load(
     explicit: Option<&Path>,
     profile: Option<&str>,
     explicit_geometry: Option<StartupGeometry>,
+    explicit_command: Vec<String>,
 ) -> Result<Session, Error> {
     let parsed = read_config(explicit)?;
-    let (sources, geometry, font_size) = resolve(&parsed, profile, explicit_geometry)?;
+    let (sources, geometry, font_size, command) =
+        resolve(&parsed, profile, explicit_geometry, explicit_command)?;
     let fonts = load_paths(&sources)?;
     let font_family = primary_family(&sources, &fonts);
     Ok(Session {
@@ -94,6 +106,7 @@ pub(crate) fn load(
         geometry,
         font_size,
         font_family,
+        command,
     })
 }
 
@@ -183,12 +196,14 @@ fn parse_config(text: &str, config_dir: &Path) -> Result<ParsedConfig, Error> {
             None => None,
         };
         let font_size = validate_font_size(profile.font_size)?;
+        let command = profile_command(&name, profile.command, profile.args)?;
         profiles.insert(
             name,
             ParsedProfile {
                 geometry,
                 fonts,
                 font_size,
+                command,
             },
         );
     }
@@ -197,6 +212,30 @@ fn parse_config(text: &str, config_dir: &Path) -> Result<ParsedConfig, Error> {
         font_size,
         profiles,
     })
+}
+
+/// A profile's `command` plus `args`; no command means the login shell.
+fn profile_command(
+    name: &str,
+    command: Option<String>,
+    args: Option<Vec<String>>,
+) -> Result<Vec<String>, Error> {
+    match (command, args) {
+        (None, None) => Ok(Vec::new()),
+        (None, Some(_)) => Err(Error::Config(format!(
+            "profile `{name}` sets args without a command"
+        ))),
+        (Some(program), args) => {
+            if program.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "profile `{name}` has an empty command"
+                )));
+            }
+            let mut argv = vec![program];
+            argv.extend(args.unwrap_or_default());
+            Ok(argv)
+        }
+    }
 }
 
 /// Family name to prefer for fallback. A bundled face has a fixed family;
@@ -270,12 +309,14 @@ fn resolve(
     parsed: &ParsedConfig,
     profile: Option<&str>,
     explicit_geometry: Option<StartupGeometry>,
-) -> Result<(Vec<FontSource>, Option<StartupGeometry>, f32), Error> {
+    explicit_command: Vec<String>,
+) -> Result<Resolved, Error> {
     let Some(name) = profile else {
         return Ok((
             parsed.fonts.clone(),
             explicit_geometry,
             parsed.font_size.unwrap_or(DEFAULT_FONT_SIZE),
+            explicit_command,
         ));
     };
     let configured = parsed.profiles.get(name);
@@ -296,7 +337,14 @@ fn resolve(
         .and_then(|profile| profile.font_size)
         .or(parsed.font_size)
         .unwrap_or(DEFAULT_FONT_SIZE);
-    Ok((fonts, geometry, font_size))
+    let command = if explicit_command.is_empty() {
+        configured
+            .map(|profile| profile.command.clone())
+            .unwrap_or_default()
+    } else {
+        explicit_command
+    };
+    Ok((fonts, geometry, font_size, command))
 }
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -353,7 +401,7 @@ mod tests {
     fn empty_config_keeps_the_bundled_font() {
         let path = std::env::temp_dir().join("uterm-empty-config");
         std::fs::write(&path, "# no fonts\n").unwrap();
-        let fonts = load(Some(&path), None, None).unwrap().fonts;
+        let fonts = load(Some(&path), None, None, Vec::new()).unwrap().fonts;
         let _ = std::fs::remove_file(&path);
         assert_eq!(fonts.len(), 1);
         assert!(fonts[0].has_glyph('M'));
@@ -362,7 +410,7 @@ mod tests {
     #[test]
     fn missing_explicit_config_is_an_error() {
         let path = std::env::temp_dir().join("uterm-missing-config");
-        let err = load(Some(&path), None, None).unwrap_err();
+        let err = load(Some(&path), None, None, Vec::new()).unwrap_err();
         assert!(err.to_string().contains("uterm-missing-config"));
     }
 
@@ -379,7 +427,7 @@ fonts = ["~/Fonts/unifont.ttf"]
 geometry = "128x40"
 "#;
         let parsed = parse_config(text, Path::new("/cfg")).unwrap();
-        let (fonts, geometry, _) = resolve(&parsed, Some("ssh"), None).unwrap();
+        let (fonts, geometry, _, _) = resolve(&parsed, Some("ssh"), None, Vec::new()).unwrap();
         let home = std::env::var("HOME").unwrap();
         assert_eq!(
             fonts,
@@ -395,7 +443,7 @@ geometry = "128x40"
             })
         );
 
-        let (fonts, geometry, _) = resolve(&parsed, Some("mail"), None).unwrap();
+        let (fonts, geometry, _, _) = resolve(&parsed, Some("mail"), None, Vec::new()).unwrap();
         assert_eq!(
             fonts,
             vec![FontSource::File(PathBuf::from("/cfg/Cascadia.ttf"))]
@@ -412,14 +460,14 @@ geometry = "128x40"
     #[test]
     fn builtin_profile_and_explicit_geometry() {
         let parsed = ParsedConfig::default();
-        let (_, geometry, _) = resolve(&parsed, Some("mc"), None).unwrap();
+        let (_, geometry, _, _) = resolve(&parsed, Some("mc"), None, Vec::new()).unwrap();
         assert_eq!(geometry, Some(StartupGeometry { cols: 80, rows: 24 }));
 
         let explicit = StartupGeometry { cols: 90, rows: 30 };
-        let (_, geometry, _) = resolve(&parsed, Some("mc"), Some(explicit)).unwrap();
+        let (_, geometry, _, _) = resolve(&parsed, Some("mc"), Some(explicit), Vec::new()).unwrap();
         assert_eq!(geometry, Some(explicit));
 
-        let err = resolve(&parsed, Some("nope"), None).unwrap_err();
+        let err = resolve(&parsed, Some("nope"), None, Vec::new()).unwrap_err();
         assert!(err.to_string().contains("unknown profile"));
     }
 
@@ -427,7 +475,7 @@ geometry = "128x40"
     fn profile_can_replace_a_builtin_size() {
         let text = "[profiles.mc]\ngeometry = \"100x40\"\n";
         let parsed = parse_config(text, Path::new("/cfg")).unwrap();
-        let (_, geometry, _) = resolve(&parsed, Some("mc"), None).unwrap();
+        let (_, geometry, _, _) = resolve(&parsed, Some("mc"), None, Vec::new()).unwrap();
         assert_eq!(
             geometry,
             Some(StartupGeometry {
@@ -467,16 +515,33 @@ geometry = "128x40"
     }
 
     #[test]
+    fn profile_command_and_args_are_used_unless_the_cli_overrides() {
+        let text = "[profiles.mc]\ncommand = \"mc\"\nargs = [\"-d\", \"--nocolor\"]\n";
+        let parsed = parse_config(text, Path::new("/cfg")).unwrap();
+        let (_, _, _, command) = resolve(&parsed, Some("mc"), None, Vec::new()).unwrap();
+        assert_eq!(command, ["mc", "-d", "--nocolor"]);
+
+        let explicit = vec!["sh".to_owned(), "-l".to_owned()];
+        let (_, _, _, command) = resolve(&parsed, Some("mc"), None, explicit.clone()).unwrap();
+        assert_eq!(command, explicit);
+
+        let (_, _, _, command) = resolve(&parsed, None, None, Vec::new()).unwrap();
+        assert!(command.is_empty());
+        assert!(parse_config("[profiles.mc]\nargs = [\"-d\"]\n", Path::new(".")).is_err());
+        assert!(parse_config("[profiles.mc]\ncommand = \"\"\n", Path::new(".")).is_err());
+    }
+
+    #[test]
     fn font_size_defaults_and_profile_overrides() {
         let parsed = ParsedConfig::default();
-        let (_, _, size) = resolve(&parsed, None, None).unwrap();
+        let (_, _, size, _) = resolve(&parsed, None, None, Vec::new()).unwrap();
         assert_eq!(size, DEFAULT_FONT_SIZE);
 
         let text = "font_size = 16\n[profiles.mc]\nfont_size = 18\n";
         let parsed = parse_config(text, Path::new(".")).unwrap();
-        let (_, _, size) = resolve(&parsed, Some("mc"), None).unwrap();
+        let (_, _, size, _) = resolve(&parsed, Some("mc"), None, Vec::new()).unwrap();
         assert_eq!(size, 18.0);
-        let (_, _, size) = resolve(&parsed, Some("ssh"), None).unwrap();
+        let (_, _, size, _) = resolve(&parsed, Some("ssh"), None, Vec::new()).unwrap();
         assert_eq!(size, 16.0);
         assert!(parse_config("font_size = 0\n", Path::new(".")).is_err());
     }

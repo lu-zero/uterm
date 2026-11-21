@@ -26,7 +26,12 @@
 # wins over both. Omit `fonts` on a profile to inherit the list above;
 # `fonts = []` keeps only the bundled face.
 
+# `command` and `args` run a program instead of the login shell; words after
+# `--` on the command line override them. `args` needs a `command`.
+
 # [profiles.ssh]
 # geometry = "128x40"
 # font_size = 13
 # fonts = ["default", "/path/to/cjk.ttf"]
+# command = "mc"
+# args = ["-d"]

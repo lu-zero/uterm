@@ -80,9 +80,13 @@ Any other name has to be written in the file. An unknown name is an error. `--ge
 geometry = "128x40"
 fonts = ["default", "/path/to/cjk.ttf"]
 font_size = 13
+
+[profiles.mc]
+command = "mc"
+args = ["-d"]
 ```
 
-A profile `geometry` replaces the built-in size of the same name, and `font_size` replaces the top-level size. Omit `fonts` to keep the top-level list, or set `fonts = []` to keep only the bundled face.
+A profile `geometry` replaces the built-in size of the same name, and `font_size` replaces the top-level size. Omit `fonts` to keep the top-level list, or set `fonts = []` to keep only the bundled face. `command` and `args` replace the login shell with a program and its arguments; words after `--` on the command line override both. With no command configured or given, uterm starts the user's login shell.
 
 `Cargo.lock` is not committed (library-style noise for this small app); dependency resolution comes from `Cargo.toml`.
 
