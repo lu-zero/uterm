@@ -8,7 +8,7 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 
 - PTY-backed interactive shell (default login shell via `rio_vt::teletypewriter::create_pty_with_spawn`)
 - VT state and parsing driven by `rio_vt::crosswords::Crosswords` + `performer::Machine`
-- HiDPI-aware cell sizing and rendering with bundled **Cascadia Code NF** or a configurable fallback list of faces (`config.toml`)
+- HiDPI-aware cell sizing and rendering with bundled **Maple Mono NF**, with automatic system-font fallback for glyphs it lacks, or a configurable face list (`config.toml`)
 - Per-cell foreground/background color rendering (ANSI 16/256/truecolor, named/indexed palette resolution, inverse)
 - Basic keyboard input (text, arrows/home/end/page/delete, F1–F12, Ctrl/Alt combos)
 - Minimal tab support (one shell per tab) with a styled tab bar showing per-tab titles (OSC/title updates), clickable tabs, and per-tab close buttons; tabs also close when the shell exits (e.g. `Ctrl+D`) or via shortcut
@@ -47,15 +47,16 @@ cargo run -- --profile mc
 
 ### Fonts
 
-With no config file, uterm uses the bundled Cascadia Code NF. To add faces, create `~/.config/uterm/config.toml` (or `$XDG_CONFIG_HOME/uterm/config.toml`, or pass `--config PATH`, or set `$UTERM_CONFIG`).
+With no config file, uterm uses the bundled Maple Mono NF. When a glyph is missing, uterm looks it up in installed system fonts (preferring the primary family, then monospace, system UI, and script-specific fallbacks) and caches the face it finds. To control the faces yourself, create `~/.config/uterm/config.toml` (or `$XDG_CONFIG_HOME/uterm/config.toml`, or pass `--config PATH`, or set `$UTERM_CONFIG`).
 
-`fonts` is a fallback list: faces are tried in order, the first sets the cell size from the advance of `M`, and each later face supplies glyphs the earlier ones lack. `cascadia` names the bundled face, so a typical list pairs it with a CJK coverage font:
+`fonts` is a fallback list: faces are tried in order, the first sets the cell size from the advance of `M`, and each later face supplies glyphs the earlier ones lack. Entries can be the bundled keyword `maple`, an installed family name, or a path:
 
 ```toml
-fonts = ["cascadia", "/path/to/cjk.ttf"]
+fonts = ["maple", "Menlo", "/path/to/cjk.ttf"]
+font_size = 14
 ```
 
-Paths may be absolute, relative to the config file, or `~/...`. An empty or missing `fonts` list is the same as `fonts = ["cascadia"]`; a real file named `cascadia` should be written as `./cascadia`. See `config.toml` for a fuller example.
+A bare name is a family; a path needs a separator, a leading `.` or `~`, or a `.ttf`/`.otf`/`.ttc` extension. Paths may be absolute, relative to the config file, or `~/...`. An empty or missing `fonts` list is the same as `fonts = ["maple"]`. `font_size` is in points and defaults to 14. Run `uterm --list-fonts` to see the bundled keyword and the installed font families. See `config.toml` for a fuller example.
 
 ### Profiles
 
@@ -74,10 +75,11 @@ Any other name has to be written in the file. An unknown name is an error. `--ge
 ```toml
 [profiles.ssh]
 geometry = "128x40"
-fonts = ["cascadia", "/path/to/cjk.ttf"]
+fonts = ["maple", "/path/to/cjk.ttf"]
+font_size = 13
 ```
 
-A profile `geometry` replaces the built-in size of the same name. Omit `fonts` to keep the top-level list, or set `fonts = []` to keep only bundled Cascadia.
+A profile `geometry` replaces the built-in size of the same name, and `font_size` replaces the top-level size. Omit `fonts` to keep the top-level list, or set `fonts = []` to keep only bundled Maple.
 
 `Cargo.lock` is not committed (library-style noise for this small app); dependency resolution comes from `Cargo.toml`.
 
@@ -96,4 +98,4 @@ Terminal route IDs are `Tab.id` values and are used for tab-exit routing (`UiEve
 ## License
 
 - `uterm` source: [MIT](./LICENSE)
-- Cascadia Code NF (bundled): [SIL Open Font License 1.1](./CascadiaCode-LICENSE.txt)
+- Maple Mono NF (bundled): [SIL Open Font License 1.1](./MapleMono-LICENSE.txt)

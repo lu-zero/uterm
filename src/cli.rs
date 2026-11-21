@@ -18,6 +18,7 @@ pub(crate) struct RunOptions {
     pub(crate) geometry: Option<StartupGeometry>,
     pub(crate) profile: Option<String>,
     pub(crate) config: Option<PathBuf>,
+    pub(crate) list_fonts: bool,
 }
 
 #[derive(Debug)]
@@ -27,7 +28,7 @@ pub(crate) enum Startup {
 }
 
 pub(crate) fn help_text() -> &'static str {
-    "uterm: a tiny terminal\n  --geometry WxH   terminal size in cells (e.g. 128x40)\n  --profile NAME   sh, mc, ssh, or a name from config.toml\n  --config PATH    fonts and profiles (default: ~/.config/uterm/config.toml)\n  Ctrl+Shift+T/W    new/close tab\n  Ctrl+Shift+C/V    copy/paste\n  Ctrl+Shift+N      new window\n  Alt+Enter         toggle resize lock"
+    "uterm: a tiny terminal\n  --geometry WxH   terminal size in cells (e.g. 128x40)\n  --profile NAME   sh, mc, ssh, or a name from config.toml\n  --config PATH    fonts and profiles (default: ~/.config/uterm/config.toml)\n  --list-fonts     print bundled and installed font families\n  Ctrl+Shift+T/W    new/close tab\n  Ctrl+Shift+C/V    copy/paste\n  Ctrl+Shift+N      new window\n  Alt+Enter         toggle resize lock"
 }
 
 const PROFILES: &[(&str, usize, usize)] = &[("sh", 80, 25), ("mc", 80, 24), ("ssh", 128, 40)];
@@ -84,6 +85,7 @@ pub(crate) fn parse_args_from(args: &[String]) -> Result<Startup, Error> {
     let mut geometry = None;
     let mut profile = None;
     let mut config = None;
+    let mut list_fonts = false;
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -113,6 +115,8 @@ pub(crate) fn parse_args_from(args: &[String]) -> Result<Startup, Error> {
                 profile = Some(v.clone());
             }
             i += 1;
+        } else if arg == "--list-fonts" {
+            list_fonts = true;
         } else if arg == "--help" || arg == "-h" {
             return Ok(Startup::Help);
         }
@@ -122,6 +126,7 @@ pub(crate) fn parse_args_from(args: &[String]) -> Result<Startup, Error> {
         geometry: geometry.map(|(cols, rows)| StartupGeometry { cols, rows }),
         profile,
         config,
+        list_fonts,
     }))
 }
 

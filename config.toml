@@ -1,26 +1,31 @@
 # Example configuration for uterm. Copy to ~/.config/uterm/config.toml,
-# or pass --config PATH. A missing default file keeps bundled Cascadia.
+# or pass --config PATH. A missing default file keeps bundled Maple Mono NF.
 #
 # Search order: --config, $UTERM_CONFIG, $XDG_CONFIG_HOME/uterm/config.toml,
 # ~/.config/uterm/config.toml.
 
 # `fonts` is a fallback list: the first face sets the cell size from `M`, and
-# each later face adds glyphs the earlier ones lack. `cascadia` is the bundled
-# Cascadia Code NF (Latin, Cyrillic, no CJK). Paths are absolute, relative to
-# this file, or ~/... . A real file named cascadia is written as ./cascadia.
-# An empty or missing `fonts` list keeps bundled Cascadia.
+# each later face adds glyphs the earlier ones lack. Entries are the bundled
+# keyword `maple`, an installed family name, or a path. Paths are absolute,
+# relative to this file, or ~/... . A bare name is a family, so a real file
+# named maple is written as ./maple. An empty or missing `fonts` list keeps
+# bundled Maple. Glyphs none of these cover are looked up in system fonts.
+#
+# font_size = 14
 
 # fonts = [
-#   "cascadia",
+#   "maple",
+#   "Menlo",
 #   "/path/to/cjk.ttf",
 # ]
 
 # Built-in profiles: ssh = 128x40, sh = 80x25, mc = 80x24. A profile here
-# replaces that size when it sets `geometry`. Any other name must be defined
-# here; unknown names are errors. --geometry wins over both.
-# Omit `fonts` on a profile to inherit the list above; `fonts = []` keeps
-# bundled Cascadia only.
+# replaces that size when it sets `geometry`, and can override `font_size`.
+# Any other name must be defined here; unknown names are errors. --geometry
+# wins over both. Omit `fonts` on a profile to inherit the list above;
+# `fonts = []` keeps bundled Maple only.
 
 # [profiles.ssh]
 # geometry = "128x40"
-# fonts = ["cascadia", "/path/to/cjk.ttf"]
+# font_size = 13
+# fonts = ["maple", "/path/to/cjk.ttf"]

@@ -6,12 +6,12 @@
 //! 3. `$XDG_CONFIG_HOME/uterm/config.toml`
 //! 4. `~/.config/uterm/config.toml`
 //!
-//! A missing default file keeps the bundled Cascadia Code. A path given with
+//! A missing default file keeps the bundled Maple Mono NF. A path given with
 //! `--config` or `$UTERM_CONFIG` must exist. `fonts` is a fallback list, tried
 //! in order. The first face sets the cell size. Each later face adds glyphs
-//! the earlier faces lack. The name `cascadia` is the bundled face, so
-//! `fonts = ["cascadia", "coverage.ttf"]` keeps Cascadia's Latin and takes
-//! other scripts from a second face of the user's choosing.
+//! the earlier faces lack. Entries are the bundled keyword `maple`, an
+//! installed family name, or a font path; glyphs none of them cover are
+//! looked up in system fonts. `font_size` sets the point size, default 14.
 //!
 //! `[profiles.NAME]` may set `geometry` (`"128x40"`) and its own `fonts`.
 //! `--profile sh|mc|ssh` still has a built-in size when the file does not
@@ -19,7 +19,8 @@
 
 use crate::cli::{self, StartupGeometry};
 use crate::error::Error;
-use fontdue::{Font, FontSettings};
+use crate::fonts::{self, DEFAULT_FACE};
+use fontdue::Font;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,8 @@ use std::path::{Path, PathBuf};
 struct ConfigFile {
     #[serde(default)]
     fonts: Vec<String>,
+    #[serde(default)]
+    font_size: Option<f32>,
     #[serde(default)]
     profiles: BTreeMap<String, ProfileFile>,
 }
@@ -42,31 +45,39 @@ struct ProfileFile {
     /// profile's own list (empty keeps the bundled face).
     #[serde(default)]
     fonts: Option<Vec<String>>,
+    #[serde(default)]
+    font_size: Option<f32>,
 }
 
-/// One entry in a font list. `cascadia` is the face compiled into the binary.
-/// Any other string is a file path.
+/// One entry in a font list: a bundled keyword, a file path, or an installed
+/// family name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum FontSource {
-    Bundled,
+    Bundled(String),
+    Family(String),
     File(PathBuf),
 }
 
 #[derive(Default)]
 struct ParsedConfig {
     fonts: Vec<FontSource>,
+    font_size: Option<f32>,
     profiles: BTreeMap<String, ParsedProfile>,
 }
 
 struct ParsedProfile {
     geometry: Option<StartupGeometry>,
     fonts: Option<Vec<FontSource>>,
+    font_size: Option<f32>,
 }
 
 #[derive(Debug)]
 pub(crate) struct Session {
     pub(crate) fonts: Vec<Font>,
     pub(crate) geometry: Option<StartupGeometry>,
+    pub(crate) font_size: f32,
+    /// The first face's family, used as the preferred family for fallback.
+    pub(crate) font_family: String,
 }
 
 pub(crate) fn load(
@@ -75,43 +86,47 @@ pub(crate) fn load(
     explicit_geometry: Option<StartupGeometry>,
 ) -> Result<Session, Error> {
     let parsed = read_config(explicit)?;
-    let (paths, geometry) = resolve(&parsed, profile, explicit_geometry)?;
+    let (sources, geometry, font_size) = resolve(&parsed, profile, explicit_geometry)?;
+    let fonts = load_paths(&sources)?;
+    let font_family = fonts
+        .first()
+        .and_then(|font| font.name())
+        .unwrap_or(DEFAULT_FACE)
+        .to_owned();
     Ok(Session {
-        fonts: load_paths(&paths)?,
+        fonts,
         geometry,
+        font_size,
+        font_family,
     })
 }
 
 fn load_paths(sources: &[FontSource]) -> Result<Vec<Font>, Error> {
     if sources.is_empty() {
-        return Ok(vec![bundled_font()?]);
+        return Ok(vec![fonts::bundled_font(DEFAULT_FACE)?]);
     }
-    let mut fonts = Vec::with_capacity(sources.len());
+    let mut loaded = Vec::with_capacity(sources.len());
     for source in sources {
         let font = match source {
-            FontSource::Bundled => bundled_font()?,
+            FontSource::Bundled(name) => fonts::bundled_font(name)?,
+            FontSource::Family(family) => {
+                let Some((bytes, index)) = fonts::family_font(family) else {
+                    return Err(Error::Font(format!(
+                        "font family `{family}` is not installed"
+                    )));
+                };
+                fonts::font_from(&bytes, index, family)?
+            }
             FontSource::File(path) => {
                 let bytes = std::fs::read(path).map_err(|err| {
                     Error::Font(format!("failed to read {}: {err}", path.display()))
                 })?;
-                Font::from_bytes(bytes, FontSettings::default()).map_err(|err| {
-                    Error::Font(format!("failed to parse {}: {err}", path.display()))
-                })?
+                fonts::font_from(&bytes, 0, &path.display().to_string())?
             }
         };
-        fonts.push(font);
+        loaded.push(font);
     }
-    Ok(fonts)
-}
-
-const CASCADIA_TTF: &[u8] = include_bytes!("../CascadiaCodeNF.ttf");
-
-/// The name of the bundled Cascadia Code NF face inside a `fonts` list.
-const BUNDLED_FACE: &str = "cascadia";
-
-pub(crate) fn bundled_font() -> Result<Font, Error> {
-    Font::from_bytes(CASCADIA_TTF, FontSettings::default())
-        .map_err(|err| Error::Font(format!("failed to load the bundled font: {err}")))
+    Ok(loaded)
 }
 
 fn read_config(explicit: Option<&Path>) -> Result<ParsedConfig, Error> {
@@ -138,7 +153,7 @@ fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("UTERM_CONFIG") {
         return Some(PathBuf::from(path));
     }
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(xdg).join("uterm").join("config.toml"));
     }
     let home = std::env::var_os("HOME")?;
@@ -154,6 +169,7 @@ fn parse_config(text: &str, config_dir: &Path) -> Result<ParsedConfig, Error> {
     let file: ConfigFile =
         toml::from_str(text).map_err(|err| Error::Usage(format!("invalid config: {err}")))?;
     let fonts = font_list(&file.fonts, config_dir)?;
+    let font_size = validate_font_size(file.font_size)?;
     let mut profiles = BTreeMap::new();
     for (name, profile) in file.profiles {
         if name.is_empty() {
@@ -167,24 +183,61 @@ fn parse_config(text: &str, config_dir: &Path) -> Result<ParsedConfig, Error> {
             Some(list) => Some(font_list(&list, config_dir)?),
             None => None,
         };
-        profiles.insert(name, ParsedProfile { geometry, fonts });
+        let font_size = validate_font_size(profile.font_size)?;
+        profiles.insert(
+            name,
+            ParsedProfile {
+                geometry,
+                fonts,
+                font_size,
+            },
+        );
     }
-    Ok(ParsedConfig { fonts, profiles })
+    Ok(ParsedConfig {
+        fonts,
+        font_size,
+        profiles,
+    })
+}
+
+fn validate_font_size(size: Option<f32>) -> Result<Option<f32>, Error> {
+    match size {
+        Some(size) if size.is_finite() && (4.0..=256.0).contains(&size) => Ok(Some(size)),
+        Some(_) => Err(Error::Usage(
+            "font_size must be between 4 and 256".to_string(),
+        )),
+        None => Ok(None),
+    }
 }
 
 fn font_list(raw_paths: &[String], config_dir: &Path) -> Result<Vec<FontSource>, Error> {
     let mut sources = Vec::with_capacity(raw_paths.len());
     for raw in raw_paths {
         if raw.is_empty() {
-            return Err(Error::Usage("config font path is empty".to_string()));
+            return Err(Error::Usage("config font entry is empty".to_string()));
         }
-        if raw == BUNDLED_FACE {
-            sources.push(FontSource::Bundled);
+        if raw == fonts::MAPLE_FACE {
+            sources.push(FontSource::Bundled(raw.clone()));
+        } else if looks_like_path(raw) {
+            sources.push(FontSource::File(expand_font_path(raw, config_dir)?));
         } else {
-            sources.push(FontSource::File(expand_font_path(raw, config_dir)));
+            sources.push(FontSource::Family(raw.clone()));
         }
     }
     Ok(sources)
+}
+
+/// Paths are unambiguous about being paths: a separator, a leading `.` or `~`,
+/// or a font-file extension. Every other bare name is a font family.
+fn looks_like_path(raw: &str) -> bool {
+    let lower = raw.to_lowercase();
+    raw.starts_with('.')
+        || raw.starts_with('~')
+        || raw.contains('/')
+        || raw.contains(std::path::MAIN_SEPARATOR)
+        || [".ttf", ".otf", ".ttc"]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
 }
 
 fn geometry_from(raw: &str) -> Result<StartupGeometry, Error> {
@@ -199,9 +252,13 @@ fn resolve(
     parsed: &ParsedConfig,
     profile: Option<&str>,
     explicit_geometry: Option<StartupGeometry>,
-) -> Result<(Vec<FontSource>, Option<StartupGeometry>), Error> {
+) -> Result<(Vec<FontSource>, Option<StartupGeometry>, f32), Error> {
     let Some(name) = profile else {
-        return Ok((parsed.fonts.clone(), explicit_geometry));
+        return Ok((
+            parsed.fonts.clone(),
+            explicit_geometry,
+            parsed.font_size.unwrap_or(DEFAULT_FONT_SIZE),
+        ));
     };
     let configured = parsed.profiles.get(name);
     let builtin = cli::builtin_geometry(name);
@@ -217,25 +274,30 @@ fn resolve(
         Some(fonts) => fonts.clone(),
         None => parsed.fonts.clone(),
     };
-    Ok((fonts, geometry))
+    let font_size = configured
+        .and_then(|profile| profile.font_size)
+        .or(parsed.font_size)
+        .unwrap_or(DEFAULT_FONT_SIZE);
+    Ok((fonts, geometry, font_size))
 }
 
-fn expand_font_path(raw: &str, config_dir: &Path) -> PathBuf {
+pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
+
+fn expand_font_path(raw: &str, config_dir: &Path) -> Result<PathBuf, Error> {
     let path = if raw == "~" {
-        home_dir().unwrap_or_else(|| PathBuf::from(raw))
+        home_dir().ok_or_else(|| Error::Font("cannot expand `~`: HOME is not set".to_string()))?
     } else if let Some(rest) = raw.strip_prefix("~/") {
-        match home_dir() {
-            Some(home) => home.join(rest),
-            None => PathBuf::from(raw),
-        }
+        let home = home_dir()
+            .ok_or_else(|| Error::Font("cannot expand `~/`: HOME is not set".to_string()))?;
+        home.join(rest)
     } else {
         PathBuf::from(raw)
     };
-    if path.is_absolute() {
+    Ok(if path.is_absolute() {
         path
     } else {
         config_dir.join(path)
-    }
+    })
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -299,7 +361,7 @@ fonts = ["~/Fonts/unifont.ttf"]
 geometry = "128x40"
 "#;
         let parsed = parse_config(text, Path::new("/cfg")).unwrap();
-        let (fonts, geometry) = resolve(&parsed, Some("ssh"), None).unwrap();
+        let (fonts, geometry, _) = resolve(&parsed, Some("ssh"), None).unwrap();
         let home = std::env::var("HOME").unwrap();
         assert_eq!(
             fonts,
@@ -315,7 +377,7 @@ geometry = "128x40"
             })
         );
 
-        let (fonts, geometry) = resolve(&parsed, Some("mail"), None).unwrap();
+        let (fonts, geometry, _) = resolve(&parsed, Some("mail"), None).unwrap();
         assert_eq!(
             fonts,
             vec![FontSource::File(PathBuf::from("/cfg/Cascadia.ttf"))]
@@ -332,11 +394,11 @@ geometry = "128x40"
     #[test]
     fn builtin_profile_and_explicit_geometry() {
         let parsed = ParsedConfig::default();
-        let (_, geometry) = resolve(&parsed, Some("mc"), None).unwrap();
+        let (_, geometry, _) = resolve(&parsed, Some("mc"), None).unwrap();
         assert_eq!(geometry, Some(StartupGeometry { cols: 80, rows: 24 }));
 
         let explicit = StartupGeometry { cols: 90, rows: 30 };
-        let (_, geometry) = resolve(&parsed, Some("mc"), Some(explicit)).unwrap();
+        let (_, geometry, _) = resolve(&parsed, Some("mc"), Some(explicit)).unwrap();
         assert_eq!(geometry, Some(explicit));
 
         let err = resolve(&parsed, Some("nope"), None).unwrap_err();
@@ -347,7 +409,7 @@ geometry = "128x40"
     fn profile_can_replace_a_builtin_size() {
         let text = "[profiles.mc]\ngeometry = \"100x40\"\n";
         let parsed = parse_config(text, Path::new("/cfg")).unwrap();
-        let (_, geometry) = resolve(&parsed, Some("mc"), None).unwrap();
+        let (_, geometry, _) = resolve(&parsed, Some("mc"), None).unwrap();
         assert_eq!(
             geometry,
             Some(StartupGeometry {
@@ -358,23 +420,44 @@ geometry = "128x40"
     }
 
     #[test]
-    fn cascadia_name_is_the_bundled_face() {
-        let text = "fonts = [\"cascadia\", \"jp.ttf\"]\n";
+    fn maple_name_is_the_bundled_face() {
+        let text = "fonts = [\"maple\", \"jp.ttf\"]\n";
         let fonts = parse_config(text, Path::new("/cfg")).unwrap().fonts;
         assert_eq!(
             fonts,
             vec![
-                FontSource::Bundled,
+                FontSource::Bundled("maple".to_owned()),
                 FontSource::File(PathBuf::from("/cfg/jp.ttf")),
             ]
         );
         // A relative path keeps the file, including one spelled like the keyword.
-        let text = "fonts = [\"./cascadia\"]\n";
+        let text = "fonts = [\"./maple\"]\n";
         let fonts = parse_config(text, Path::new("/cfg")).unwrap().fonts;
-        assert_eq!(
-            fonts,
-            vec![FontSource::File(PathBuf::from("/cfg/./cascadia"))]
-        );
+        assert_eq!(fonts, vec![FontSource::File(PathBuf::from("/cfg/./maple"))]);
+    }
+
+    #[test]
+    fn bare_names_are_families_and_paths_stay_paths() {
+        let text = "fonts = [\"Menlo\", \"~/.fonts/Code.ttf\", \"/abs/face.otf\"]\n";
+        let fonts = parse_config(text, Path::new("/cfg")).unwrap().fonts;
+        assert_eq!(fonts[0], FontSource::Family("Menlo".to_owned()));
+        assert!(matches!(fonts[1], FontSource::File(_)));
+        assert!(matches!(fonts[2], FontSource::File(_)));
+    }
+
+    #[test]
+    fn font_size_defaults_and_profile_overrides() {
+        let parsed = ParsedConfig::default();
+        let (_, _, size) = resolve(&parsed, None, None).unwrap();
+        assert_eq!(size, DEFAULT_FONT_SIZE);
+
+        let text = "font_size = 16\n[profiles.mc]\nfont_size = 18\n";
+        let parsed = parse_config(text, Path::new(".")).unwrap();
+        let (_, _, size) = resolve(&parsed, Some("mc"), None).unwrap();
+        assert_eq!(size, 18.0);
+        let (_, _, size) = resolve(&parsed, Some("ssh"), None).unwrap();
+        assert_eq!(size, 16.0);
+        assert!(parse_config("font_size = 0\n", Path::new(".")).is_err());
     }
 
     #[test]

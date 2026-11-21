@@ -14,7 +14,7 @@ use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
 use softbuffer::Surface;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use winit::dpi::PhysicalSize;
@@ -77,12 +77,18 @@ pub(crate) struct AppState {
     pub(crate) next_tab_id: usize,
     /// Faces in fallback order. The first face sets the cell size.
     pub(crate) fonts: Vec<Font>,
+    /// The face whose family is preferred when looking for a fallback.
+    pub(crate) font_family: String,
+    /// Point size from the config, before DPI scaling.
+    pub(crate) font_size: f32,
     pub(crate) font_px: f32,
     pub(crate) cell_w: usize,
     pub(crate) cell_h: usize,
     pub(crate) ascent: f32,
     pub(crate) modifiers: Modifiers,
     pub(crate) glyph_cache: HashMap<char, (fontdue::Metrics, Vec<u8>)>,
+    /// Codepoints no configured or discovered face could draw; do not retry each frame.
+    pub(crate) glyph_misses: HashSet<char>,
     pub(crate) proxy: EventLoopProxy<UiEvent>,
     pub(crate) cursor_pos: (f64, f64),
     pub(crate) mouse_buttons: [bool; 3], // left, middle, right
@@ -102,6 +108,8 @@ impl AppState {
         proxy: EventLoopProxy<UiEvent>,
         clipboard: SystemClipboard,
         fonts: Vec<Font>,
+        font_size: f32,
+        font_family: String,
     ) -> Result<Self, Error> {
         if fonts.is_empty() {
             return Err(Error::Font("no font configured".to_string()));
@@ -113,12 +121,15 @@ impl AppState {
             active: 0,
             next_tab_id: 1,
             fonts,
-            font_px: 14.0,
+            font_family,
+            font_size,
+            font_px: font_size,
             cell_w: 8,
             cell_h: 16,
             ascent: 0.0,
             modifiers: Modifiers::default(),
             glyph_cache: HashMap::new(),
+            glyph_misses: HashSet::new(),
             proxy,
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
@@ -134,7 +145,7 @@ impl AppState {
 
     pub(crate) fn sync_font_metrics(&mut self) -> Result<(), Error> {
         let scale = self.window.scale_factor() as f32;
-        let font_px = (14.0 * scale * (96.0 / 72.0)).round().max(12.0);
+        let font_px = (self.font_size * scale * (96.0 / 72.0)).round().max(4.0);
         let primary = &self.fonts[0];
         let lm = primary
             .horizontal_line_metrics(font_px)

@@ -23,6 +23,8 @@ pub(crate) struct Uterm {
     pub(crate) state: Option<AppState>,
     pub(crate) geometry: Option<StartupGeometry>,
     pub(crate) fonts: Vec<Font>,
+    pub(crate) font_size: f32,
+    pub(crate) font_family: String,
     pub(crate) error: Option<Error>,
 }
 
@@ -56,6 +58,8 @@ impl Uterm {
             self.proxy.clone(),
             clipboard,
             fonts,
+            self.font_size,
+            std::mem::take(&mut self.font_family),
         )?;
 
         let (cols, rows) = if let Some(g) = self.geometry {

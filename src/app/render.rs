@@ -21,16 +21,16 @@ pub(crate) fn rasterize_from(
     px: f32,
     ch: char,
 ) -> Option<(usize, fontdue::Metrics, Vec<u8>)> {
-    let (index, font) = fonts
-        .iter()
-        .enumerate()
-        .find(|(_, font)| font.has_glyph(ch))?;
-    let (metrics, bitmap) = font.rasterize(ch, px);
-    if metrics.advance_width > 0.0 && metrics.height > 0 && bitmap.iter().any(|&a| a > 0) {
-        Some((index, metrics, bitmap))
-    } else {
-        None
+    for (index, font) in fonts.iter().enumerate() {
+        if !font.has_glyph(ch) {
+            continue;
+        }
+        let (metrics, bitmap) = font.rasterize(ch, px);
+        if metrics.advance_width > 0.0 && metrics.height > 0 && bitmap.iter().any(|&a| a > 0) {
+            return Some((index, metrics, bitmap));
+        }
     }
+    None
 }
 
 impl AppState {
@@ -40,11 +40,29 @@ impl AppState {
     }
 
     pub(crate) fn ensure_glyph(&mut self, ch: char) {
-        if self.glyph_cache.contains_key(&ch) {
+        if self.glyph_cache.contains_key(&ch) || self.glyph_misses.contains(&ch) {
             return;
+        }
+        if self.rasterize_char(ch).is_none() {
+            // No configured face can draw it: find a system face once, then
+            // keep it in the list so later glyphs can reuse it.
+            let found = crate::fonts::discover(&self.font_family, ch);
+            match found {
+                Some((bytes, index)) => {
+                    if let Ok(font) = crate::fonts::font_from(&bytes, index, &self.font_family) {
+                        self.fonts.push(font);
+                    }
+                }
+                None => {
+                    self.glyph_misses.insert(ch);
+                    return;
+                }
+            }
         }
         if let Some(raster) = self.rasterize_char(ch) {
             self.glyph_cache.insert(ch, raster);
+        } else {
+            self.glyph_misses.insert(ch);
         }
     }
 
@@ -245,6 +263,33 @@ impl AppState {
         }
 
         let y_origin = bar_h;
+        // Paint all backgrounds first: a wide glyph from one cell may spill
+        // into the next, whose background must not cover that ink.
+        for r in 0..nrows {
+            let py = y_origin + r * self.cell_h;
+            if py >= bh {
+                break;
+            }
+            for c in 0..ncols {
+                let Some(idx) = r.checked_mul(ncols).and_then(|i| i.checked_add(c)) else {
+                    continue;
+                };
+                let Some(cell) = cells.get(idx) else {
+                    continue;
+                };
+                let px = c * self.cell_w;
+                if px >= bw {
+                    break;
+                }
+                let selected = is_selected(selection, r as i32, c);
+                let bg = if selected { cell.fg } else { cell.bg };
+                if bg != default_bg || selected {
+                    fill_rect(&mut buffer, bw, bh, px, py, self.cell_w, self.cell_h, bg);
+                }
+            }
+        }
+
+        // Then glyphs and cursor, on top of both cells' backgrounds.
         for r in 0..nrows {
             let py = y_origin + r * self.cell_h;
             if py >= bh {
@@ -262,16 +307,8 @@ impl AppState {
                     break;
                 }
 
-                let mut fg = cell.fg;
-                let mut bg = cell.bg;
-                if is_selected(selection, r as i32, c) {
-                    std::mem::swap(&mut fg, &mut bg);
-                }
-
-                if bg != default_bg || is_selected(selection, r as i32, c) {
-                    fill_rect(&mut buffer, bw, bh, px, py, self.cell_w, self.cell_h, bg);
-                }
-
+                let selected = is_selected(selection, r as i32, c);
+                let fg = if selected { cell.bg } else { cell.fg };
                 let ch = cell.ch;
                 if ch != '\0' && ch != ' ' {
                     if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
@@ -432,8 +469,8 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::rasterize_from;
-    use crate::config::bundled_font;
     use crate::draw::blit_glyph;
+    use crate::fonts::{bundled_font, MAPLE_FACE};
     use fontdue::{Font, Metrics};
 
     fn cell_width(font: &Font, px: f32) -> (usize, f32) {
@@ -443,14 +480,14 @@ mod tests {
     }
 
     #[test]
-    fn cascadia_paints_latin_and_ukrainian_and_skips_japanese() {
-        let font = bundled_font().unwrap();
+    fn maple_paints_latin_and_ukrainian_and_skips_japanese() {
+        let font = bundled_font(MAPLE_FACE).unwrap();
         let fonts = [font];
         let px = 32.0;
         let (_cell_w, m_advance) = cell_width(&fonts[0], px);
         for ch in ['A', 'Z', 'ї', 'є', 'і', 'ґ', 'ш', 'Є'] {
             let (face, metrics, _) = rasterize_from(&fonts, px, ch).unwrap_or_else(|| {
-                panic!("U+{:04X} {ch} has no ink in Cascadia", ch as u32);
+                panic!("U+{:04X} {ch} has no ink in Maple", ch as u32);
             });
             assert_eq!(face, 0);
             assert!(
@@ -465,7 +502,7 @@ mod tests {
 
     #[test]
     fn a_wide_bitmap_continues_into_the_next_cell() {
-        let font = bundled_font().unwrap();
+        let font = bundled_font(MAPLE_FACE).unwrap();
         let (cell_w, _) = cell_width(&font, 32.0);
         let metrics = Metrics {
             width: cell_w * 3,

@@ -84,7 +84,6 @@ impl AppState {
             return;
         }
         let button = motion_button(
-            sgr,
             self.mouse_buttons[0],
             self.mouse_buttons[1],
             self.mouse_buttons[2],
@@ -233,10 +232,10 @@ impl AppState {
     }
 }
 
-/// Drag/motion button parameter. SGR (1006) encodes drags as 32..=34 and
-/// plain motion as 35; the older X10/UTF-8 protocols add another 32.
-fn motion_button(sgr: bool, left: bool, middle: bool, right: bool) -> u8 {
-    let mut button = if left {
+/// Drag/motion button parameter: 32..=34 for drags, 35 for plain motion.
+/// `encode_mouse_report` applies the extra +32 that X10/UTF-8 need.
+fn motion_button(left: bool, middle: bool, right: bool) -> u8 {
+    if left {
         32
     } else if middle {
         33
@@ -244,11 +243,7 @@ fn motion_button(sgr: bool, left: bool, middle: bool, right: bool) -> u8 {
         34
     } else {
         35
-    };
-    if !sgr {
-        button += 32;
     }
-    button
 }
 
 pub(crate) fn encode_mouse_report(
@@ -356,9 +351,10 @@ fn function_key_bytes(n: u8, shift: bool, alt: bool, ctrl: bool) -> Option<Vec<u
     })
 }
 
-/// Cursor keys use SS3 when the application enabled DECCKM (`?1h`), matching
-/// xterm's terminfo (`kcuu1=\EOA`). Otherwise they use CSI.
-fn cursor_key_bytes(key: NamedKey, app_cursor: bool) -> Option<Vec<u8>> {
+/// Unmodified cursor keys use SS3 when the application enabled DECCKM (`?1h`),
+/// matching xterm's terminfo (`kcuu1=\EOA`), and CSI otherwise. Modified keys
+/// stay in the parameterized CSI form in both modes.
+fn cursor_key_bytes(key: NamedKey, app_cursor: bool, modifiers: Modifiers) -> Option<Vec<u8>> {
     let final_byte = match key {
         NamedKey::ArrowUp => b'A',
         NamedKey::ArrowDown => b'B',
@@ -368,10 +364,19 @@ fn cursor_key_bytes(key: NamedKey, app_cursor: bool) -> Option<Vec<u8>> {
         NamedKey::End => b'F',
         _ => return None,
     };
-    Some(if app_cursor {
-        vec![0x1b, b'O', final_byte]
+    let state = modifiers.state();
+    let shift = state.shift_key();
+    let alt = state.alt_key();
+    let ctrl = state.control_key();
+    let modifier = u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    Some(if modifier == 0 {
+        if app_cursor {
+            vec![0x1b, b'O', final_byte]
+        } else {
+            vec![0x1b, b'[', final_byte]
+        }
     } else {
-        vec![0x1b, b'[', final_byte]
+        format!("\x1b[1;{}{}", modifier + 1, final_byte as char).into_bytes()
     })
 }
 
@@ -455,7 +460,7 @@ pub(crate) fn key_to_bytes(
             | NamedKey::ArrowLeft
             | NamedKey::Home
             | NamedKey::End),
-        ) => cursor_key_bytes(*named, app_cursor),
+        ) => cursor_key_bytes(*named, app_cursor, modifiers),
         Key::Named(NamedKey::PageUp) => Some(b"\x1b[5~".to_vec()),
         Key::Named(NamedKey::PageDown) => Some(b"\x1b[6~".to_vec()),
         Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
@@ -469,35 +474,53 @@ mod tests {
         cursor_key_bytes, encode_mouse_report, function_key_bytes, function_key_index,
         motion_button,
     };
-    use winit::keyboard::NamedKey;
+    use winit::event::Modifiers;
+    use winit::keyboard::{ModifiersState, NamedKey};
 
     #[test]
     fn cursor_keys_follow_application_cursor_mode() {
+        let none = Modifiers::from(ModifiersState::empty());
         assert_eq!(
-            cursor_key_bytes(NamedKey::ArrowUp, false).as_deref(),
+            cursor_key_bytes(NamedKey::ArrowUp, false, none).as_deref(),
             Some(&b"\x1b[A"[..])
         );
         assert_eq!(
-            cursor_key_bytes(NamedKey::ArrowUp, true).as_deref(),
+            cursor_key_bytes(NamedKey::ArrowUp, true, none).as_deref(),
             Some(&b"\x1bOA"[..])
         );
         assert_eq!(
-            cursor_key_bytes(NamedKey::ArrowLeft, true).as_deref(),
+            cursor_key_bytes(NamedKey::ArrowLeft, true, none).as_deref(),
             Some(&b"\x1bOD"[..])
         );
         assert_eq!(
-            cursor_key_bytes(NamedKey::Home, true).as_deref(),
+            cursor_key_bytes(NamedKey::Home, true, none).as_deref(),
             Some(&b"\x1bOH"[..])
         );
-        assert!(cursor_key_bytes(NamedKey::Enter, true).is_none());
+        let shift = Modifiers::from(ModifiersState::SHIFT);
+        assert_eq!(
+            cursor_key_bytes(NamedKey::ArrowUp, true, shift).as_deref(),
+            Some(&b"\x1b[1;2A"[..])
+        );
+        assert!(cursor_key_bytes(NamedKey::Enter, true, none).is_none());
     }
 
     #[test]
     fn motion_button_matches_the_reporting_protocol() {
-        assert_eq!(motion_button(true, true, false, false), 32);
-        assert_eq!(motion_button(true, false, false, false), 35);
-        assert_eq!(motion_button(false, true, false, false), 64);
-        assert_eq!(motion_button(false, false, false, false), 67);
+        assert_eq!(motion_button(true, false, false), 32);
+        assert_eq!(motion_button(false, false, false), 35);
+        // The wire form adds 32 for X10/UTF-8, but not for SGR.
+        assert_eq!(
+            encode_mouse_report(motion_button(true, false, false), 0, 0, true, false, false),
+            b"\x1b[M@!!"
+        );
+        assert_eq!(
+            encode_mouse_report(motion_button(false, false, false), 0, 0, true, false, false),
+            b"\x1b[MC!!"
+        );
+        assert_eq!(
+            encode_mouse_report(motion_button(true, false, false), 0, 0, true, true, false),
+            b"\x1b[<32;1;1M"
+        );
     }
 
     #[test]
