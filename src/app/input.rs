@@ -278,9 +278,73 @@ pub(crate) fn ctrl_char(ch: char) -> Option<u8> {
     }
 }
 
+/// Number of a top-row function key, `1` for F1 through `12` for F12.
+fn function_key_index(key: NamedKey) -> Option<u8> {
+    Some(match key {
+        NamedKey::F1 => 1,
+        NamedKey::F2 => 2,
+        NamedKey::F3 => 3,
+        NamedKey::F4 => 4,
+        NamedKey::F5 => 5,
+        NamedKey::F6 => 6,
+        NamedKey::F7 => 7,
+        NamedKey::F8 => 8,
+        NamedKey::F9 => 9,
+        NamedKey::F10 => 10,
+        NamedKey::F11 => 11,
+        NamedKey::F12 => 12,
+        _ => return None,
+    })
+}
+
+/// Bytes for F1–F12 as `xterm-256color` and `rio` list them (`kf1`–`kf63`).
+///
+/// Unmodified F1–F4 are SS3 (`\EOP`…`\EOS`). F5–F12 are CSI, skipping 16 and
+/// 22 (`\E[15~`, `\E[17~`, …, `\E[24~`). A modifier uses the xterm parameter
+/// (2 shift, 3 alt, 4 both, 5 ctrl, and the combinations of those): `\E[1;{mod}P`
+/// for F1–F4 and `\E[{code};{mod}~` for F5–F12. Midnight Commander reads these
+/// from terminfo after it turns the keypad on.
+fn function_key_bytes(n: u8, shift: bool, alt: bool, ctrl: bool) -> Option<Vec<u8>> {
+    let (ss3, code) = match n {
+        1 => (b'P', 0),
+        2 => (b'Q', 0),
+        3 => (b'R', 0),
+        4 => (b'S', 0),
+        5 => (0, 15),
+        6 => (0, 17),
+        7 => (0, 18),
+        8 => (0, 19),
+        9 => (0, 20),
+        10 => (0, 21),
+        11 => (0, 23),
+        12 => (0, 24),
+        _ => return None,
+    };
+    let modifier = u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    if modifier == 0 {
+        return Some(if n <= 4 {
+            vec![0x1b, b'O', ss3]
+        } else {
+            format!("\x1b[{code}~").into_bytes()
+        });
+    }
+    let param = modifier + 1;
+    Some(if n <= 4 {
+        format!("\x1b[1;{param}{}", ss3 as char).into_bytes()
+    } else {
+        format!("\x1b[{code};{param}~").into_bytes()
+    })
+}
+
 pub(crate) fn key_to_bytes(k: &winit::event::KeyEvent, modifiers: Modifiers) -> Option<Vec<u8>> {
     let ctrl = modifiers.state().control_key();
     let alt = modifiers.state().alt_key();
+    if let Key::Named(key) = k.logical_key {
+        if let Some(n) = function_key_index(key) {
+            let shift = modifiers.state().shift_key();
+            return function_key_bytes(n, shift, alt, ctrl);
+        }
+    }
     if ctrl {
         if let Key::Character(s) = &k.logical_key {
             if let Some(ch) = s.chars().next() {
@@ -351,5 +415,75 @@ pub(crate) fn key_to_bytes(k: &winit::event::KeyEvent, modifiers: Modifiers) -> 
         Key::Named(NamedKey::PageDown) => Some(b"\x1b[6~".to_vec()),
         Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{function_key_bytes, function_key_index};
+    use winit::keyboard::NamedKey;
+
+    #[test]
+    fn function_keys_match_xterm_terminfo() {
+        assert_eq!(function_key_index(NamedKey::F2), Some(2));
+        assert_eq!(function_key_index(NamedKey::Enter), None);
+
+        assert_eq!(
+            function_key_bytes(1, false, false, false).as_deref(),
+            Some(&b"\x1bOP"[..])
+        );
+        assert_eq!(
+            function_key_bytes(2, false, false, false).as_deref(),
+            Some(&b"\x1bOQ"[..])
+        );
+        assert_eq!(
+            function_key_bytes(3, false, false, false).as_deref(),
+            Some(&b"\x1bOR"[..])
+        );
+        assert_eq!(
+            function_key_bytes(4, false, false, false).as_deref(),
+            Some(&b"\x1bOS"[..])
+        );
+        assert_eq!(
+            function_key_bytes(5, false, false, false).as_deref(),
+            Some(&b"\x1b[15~"[..])
+        );
+        assert_eq!(
+            function_key_bytes(6, false, false, false).as_deref(),
+            Some(&b"\x1b[17~"[..])
+        );
+        assert_eq!(
+            function_key_bytes(11, false, false, false).as_deref(),
+            Some(&b"\x1b[23~"[..])
+        );
+        assert_eq!(
+            function_key_bytes(12, false, false, false).as_deref(),
+            Some(&b"\x1b[24~"[..])
+        );
+
+        // kf14 / kf49 / kf29 / kf48: shift-F2, alt-F1, ctrl-F5, ctrl+shift-F12.
+        assert_eq!(
+            function_key_bytes(2, true, false, false).as_deref(),
+            Some(&b"\x1b[1;2Q"[..])
+        );
+        assert_eq!(
+            function_key_bytes(1, false, true, false).as_deref(),
+            Some(&b"\x1b[1;3P"[..])
+        );
+        assert_eq!(
+            function_key_bytes(5, false, false, true).as_deref(),
+            Some(&b"\x1b[15;5~"[..])
+        );
+        assert_eq!(
+            function_key_bytes(12, true, false, true).as_deref(),
+            Some(&b"\x1b[24;6~"[..])
+        );
+        assert_eq!(
+            function_key_bytes(2, true, true, true).as_deref(),
+            Some(&b"\x1b[1;8Q"[..])
+        );
+
+        assert!(function_key_bytes(0, false, false, false).is_none());
+        assert!(function_key_bytes(13, false, false, false).is_none());
     }
 }
