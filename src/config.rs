@@ -88,11 +88,7 @@ pub(crate) fn load(
     let parsed = read_config(explicit)?;
     let (sources, geometry, font_size) = resolve(&parsed, profile, explicit_geometry)?;
     let fonts = load_paths(&sources)?;
-    let font_family = fonts
-        .first()
-        .and_then(|font| font.name())
-        .unwrap_or(DEFAULT_FACE)
-        .to_owned();
+    let font_family = primary_family(&sources, &fonts);
     Ok(Session {
         fonts,
         geometry,
@@ -130,28 +126,31 @@ fn load_paths(sources: &[FontSource]) -> Result<Vec<Font>, Error> {
 }
 
 fn read_config(explicit: Option<&Path>) -> Result<ParsedConfig, Error> {
-    let Some(path) = resolve_config_path(explicit) else {
+    let env_config = std::env::var_os("UTERM_CONFIG")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let required = explicit.is_some() || env_config.is_some();
+    let Some(path) = resolve_config_path(explicit, env_config.as_deref()) else {
         return Ok(ParsedConfig::default());
     };
-    let required = explicit.is_some() || std::env::var_os("UTERM_CONFIG").is_some();
     match std::fs::read_to_string(&path) {
         Ok(text) => parse_config(&text, path.parent().unwrap_or(Path::new("."))),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound && !required => {
             Ok(ParsedConfig::default())
         }
-        Err(err) => Err(Error::Font(format!(
+        Err(err) => Err(Error::Config(format!(
             "failed to read config {}: {err}",
             path.display()
         ))),
     }
 }
 
-fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
+fn resolve_config_path(explicit: Option<&Path>, env_config: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = explicit {
         return Some(path.to_path_buf());
     }
-    if let Some(path) = std::env::var_os("UTERM_CONFIG") {
-        return Some(PathBuf::from(path));
+    if let Some(path) = env_config {
+        return Some(path.to_path_buf());
     }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(xdg).join("uterm").join("config.toml"));
@@ -167,13 +166,13 @@ fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 
 fn parse_config(text: &str, config_dir: &Path) -> Result<ParsedConfig, Error> {
     let file: ConfigFile =
-        toml::from_str(text).map_err(|err| Error::Usage(format!("invalid config: {err}")))?;
+        toml::from_str(text).map_err(|err| Error::Config(format!("invalid config: {err}")))?;
     let fonts = font_list(&file.fonts, config_dir)?;
     let font_size = validate_font_size(file.font_size)?;
     let mut profiles = BTreeMap::new();
     for (name, profile) in file.profiles {
         if name.is_empty() {
-            return Err(Error::Usage("config profile name is empty".to_string()));
+            return Err(Error::Config("config profile name is empty".to_string()));
         }
         let geometry = match profile.geometry.as_deref() {
             Some(raw) => Some(geometry_from(raw)?),
@@ -200,10 +199,24 @@ fn parse_config(text: &str, config_dir: &Path) -> Result<ParsedConfig, Error> {
     })
 }
 
+/// Family name to prefer for fallback. A bundled face has a fixed family;
+/// a configured family keeps its exact name, which fontique matches on.
+fn primary_family(sources: &[FontSource], fonts: &[Font]) -> String {
+    match sources.first() {
+        Some(FontSource::Bundled(_)) => fonts::MAPLE_FAMILY.to_owned(),
+        Some(FontSource::Family(name)) => name.clone(),
+        _ => fonts
+            .first()
+            .and_then(|font| font.name())
+            .unwrap_or(fonts::MAPLE_FAMILY)
+            .to_owned(),
+    }
+}
+
 fn validate_font_size(size: Option<f32>) -> Result<Option<f32>, Error> {
     match size {
         Some(size) if size.is_finite() && (4.0..=256.0).contains(&size) => Ok(Some(size)),
-        Some(_) => Err(Error::Usage(
+        Some(_) => Err(Error::Config(
             "font_size must be between 4 and 256".to_string(),
         )),
         None => Ok(None),
@@ -214,7 +227,12 @@ fn font_list(raw_paths: &[String], config_dir: &Path) -> Result<Vec<FontSource>,
     let mut sources = Vec::with_capacity(raw_paths.len());
     for raw in raw_paths {
         if raw.is_empty() {
-            return Err(Error::Usage("config font entry is empty".to_string()));
+            return Err(Error::Config("config font entry is empty".to_string()));
+        }
+        if raw.starts_with('~') && raw != "~" && !raw.starts_with("~/") {
+            return Err(Error::Config(format!(
+                "unsupported home path `{raw}`; use ~ or ~/... "
+            )));
         }
         if raw == fonts::MAPLE_FACE {
             sources.push(FontSource::Bundled(raw.clone()));
@@ -285,10 +303,10 @@ pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 fn expand_font_path(raw: &str, config_dir: &Path) -> Result<PathBuf, Error> {
     let path = if raw == "~" {
-        home_dir().ok_or_else(|| Error::Font("cannot expand `~`: HOME is not set".to_string()))?
+        home_dir().ok_or_else(|| Error::Config("cannot expand `~`: HOME is not set".to_string()))?
     } else if let Some(rest) = raw.strip_prefix("~/") {
         let home = home_dir()
-            .ok_or_else(|| Error::Font("cannot expand `~/`: HOME is not set".to_string()))?;
+            .ok_or_else(|| Error::Config("cannot expand `~/`: HOME is not set".to_string()))?;
         home.join(rest)
     } else {
         PathBuf::from(raw)

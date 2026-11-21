@@ -5,6 +5,7 @@ use std::fmt;
 #[derive(Debug)]
 pub enum Error {
     Usage(String),
+    Config(String),
     /// Columns or rows outside `1..=u16::MAX`. `rio-vt` asserts on zero columns.
     GridSize {
         cols: usize,
@@ -23,6 +24,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Usage(msg) => f.write_str(msg),
+            Error::Config(msg) => f.write_str(msg),
             Error::GridSize { cols, rows } => write!(
                 f,
                 "terminal size {cols}x{rows} is invalid; both sides must be in 1..=65535"

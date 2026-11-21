@@ -2,32 +2,6 @@
 
 use rio_vt::config::colors::term::TermColors;
 use rio_vt::config::colors::{AnsiColor, NamedColor};
-use rio_vt::selection::SelectionRange;
-
-pub(crate) fn is_selected(selection: Option<SelectionRange>, row: i32, col: usize) -> bool {
-    let Some(sel) = selection else {
-        return false;
-    };
-    if sel.is_block {
-        let c0 = sel.start.col.0.min(sel.end.col.0);
-        let c1 = sel.start.col.0.max(sel.end.col.0);
-        row >= sel.start.row.0 && row <= sel.end.row.0 && col >= c0 && col <= c1
-    } else {
-        if row < sel.start.row.0 || row > sel.end.row.0 {
-            return false;
-        }
-        if sel.start.row.0 == sel.end.row.0 {
-            col >= sel.start.col.0 && col <= sel.end.col.0
-        } else if row == sel.start.row.0 {
-            col >= sel.start.col.0
-        } else if row == sel.end.row.0 {
-            col <= sel.end.col.0
-        } else {
-            true
-        }
-    }
-}
-
 pub(crate) fn resolve_named(colors: &TermColors, name: NamedColor, dr: u8, dg: u8, db: u8) -> u32 {
     if let Some(a) = &colors[name] {
         arr_to_u32(*a)

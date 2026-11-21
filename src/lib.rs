@@ -47,11 +47,12 @@ pub fn run() -> Result<(), Error> {
         print_lines(fonts::font_families());
         return Ok(());
     }
-    let session = config::load(config.as_deref(), profile.as_deref(), geometry)?;
-    let geometry = session.geometry;
-    let fonts = session.fonts;
-    let font_size = session.font_size;
-    let font_family = session.font_family;
+    let config::Session {
+        geometry,
+        fonts,
+        font_size,
+        font_family,
+    } = config::load(config.as_deref(), profile.as_deref(), geometry)?;
     let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
@@ -65,8 +66,5 @@ pub fn run() -> Result<(), Error> {
         error: None,
     };
     event_loop.run_app(&mut app)?;
-    match app.error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
+    app.error.map_or(Ok(()), Err)
 }

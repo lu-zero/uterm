@@ -6,6 +6,7 @@ use crate::event::Listener;
 use crate::event::UiEvent;
 use crate::terminal::{cells_to_px, Tab};
 use fontdue::Font;
+use rio_vt::crosswords::grid::Scroll;
 use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
 use softbuffer::{Context, Surface};
@@ -148,6 +149,11 @@ impl ApplicationHandler<UiEvent> for Uterm {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => st.render(),
             WindowEvent::Resized(size) => {
+                // A minimized window reports 0x0; resizing the grid to the
+                // clamped minimum would destroy scrollback for no reason.
+                if size.width == 0 || size.height == 0 {
+                    return;
+                }
                 if let Err(err) = st.set_geometry_from_size(size) {
                     self.fail(event_loop, err);
                     return;
@@ -156,8 +162,28 @@ impl ApplicationHandler<UiEvent> for Uterm {
                 event_loop.set_control_flow(ControlFlow::wait_duration(OVERLAY_TIMEOUT));
                 st.window.request_redraw();
             }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // Cell metrics are physical pixels; recompute them and the grid
+                // when the window moves to a monitor with a different DPI.
+                if let Err(err) = st.sync_font_metrics(scale_factor) {
+                    self.fail(event_loop, err);
+                    return;
+                }
+                let size = st.window.inner_size();
+                if let Err(err) = st.resize_all_tabs_with(size.width as usize, size.height as usize)
+                {
+                    self.fail(event_loop, err);
+                    return;
+                }
+                st.window.request_redraw();
+            }
             WindowEvent::ModifiersChanged(m) => {
                 st.modifiers = m;
+            }
+            WindowEvent::Focused(false) => {
+                // No release event arrives after the focus loss.
+                st.mouse_buttons = [false; 3];
+                st.local_pointer = LocalPointerState::Idle;
             }
             WindowEvent::CursorMoved { position, .. } => {
                 st.cursor_pos = (position.x, position.y);
@@ -195,16 +221,18 @@ impl ApplicationHandler<UiEvent> for Uterm {
                         for _ in 0..count.min(10) {
                             if st.mouse_report_mode() {
                                 st.send_wheel_motion(btn, col as u16, row as u16);
-                            } else {
-                                st.send_mouse_report(btn, col as u16, row as u16, true);
-                                st.send_mouse_report(btn, col as u16, row as u16, false);
+                            } else if let Some(tab) = st.tabs.get(st.active) {
+                                // No application grabbed the mouse: scroll the
+                                // viewport ourselves instead of reporting nothing.
+                                tab.terminal.lock().scroll_display(Scroll::Delta(lines));
+                                st.window.request_redraw();
                             }
                         }
                     }
                 }
             }
             WindowEvent::KeyboardInput { event: k, .. } => {
-                if !(k.state == ElementState::Pressed || k.repeat) {
+                if k.state != ElementState::Pressed {
                     return;
                 }
                 let mods = st.modifiers.state();

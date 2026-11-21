@@ -1,7 +1,6 @@
 // Command-line/startup configuration parsing.
 
 use crate::error::Error;
-use crate::terminal::checked_grid;
 use std::path::PathBuf;
 
 /// A requested terminal geometry in character cells (columns x rows).
@@ -28,7 +27,15 @@ pub(crate) enum Startup {
 }
 
 pub(crate) fn help_text() -> &'static str {
-    "uterm: a tiny terminal\n  --geometry WxH   terminal size in cells (e.g. 128x40)\n  --profile NAME   sh, mc, ssh, or a name from config.toml\n  --config PATH    fonts and profiles (default: ~/.config/uterm/config.toml)\n  --list-fonts     print bundled and installed font families\n  Ctrl+Shift+T/W    new/close tab\n  Ctrl+Shift+C/V    copy/paste\n  Ctrl+Shift+N      new window\n  Alt+Enter         toggle resize lock"
+    r#"uterm: a tiny terminal
+  --geometry WxH   terminal size in cells (e.g. 128x40)
+  --profile NAME   sh, mc, ssh, or a name from config.toml
+  --config PATH    fonts and profiles (default: ~/.config/uterm/config.toml)
+  --list-fonts     print bundled and installed font families
+  Ctrl+Shift+T/W    new/close tab
+  Ctrl+Shift+C/V    copy/paste
+  Ctrl+Shift+N      new window
+  Alt+Enter         toggle resize lock"#
 }
 
 const PROFILES: &[(&str, usize, usize)] = &[("sh", 80, 25), ("mc", 80, 24), ("ssh", 128, 40)];
@@ -57,7 +64,9 @@ pub(crate) fn parse_geometry(s: &str) -> Result<(usize, usize), Error> {
     };
     let cols: usize = cols.trim().parse().map_err(|_| invalid())?;
     let rows: usize = rows.trim().parse().map_err(|_| invalid())?;
-    checked_grid(cols, rows)?;
+    if cols == 0 || rows == 0 || cols > u16::MAX as usize || rows > u16::MAX as usize {
+        return Err(invalid());
+    }
     Ok((cols, rows))
 }
 
@@ -77,7 +86,10 @@ pub(crate) fn is_command_modifier(mods: winit::keyboard::ModifiersState) -> bool
 /// An explicit `--geometry` is returned as geometry. The profile name is
 /// returned as given; built-in and `config.toml` sizes are applied in `config`.
 pub(crate) fn parse_args() -> Result<Startup, Error> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     parse_args_from(&args)
 }
 
@@ -89,36 +101,38 @@ pub(crate) fn parse_args_from(args: &[String]) -> Result<Startup, Error> {
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
-        let value = arg
-            .strip_prefix("--geometry=")
-            .or_else(|| arg.strip_prefix("--profile="))
-            .or_else(|| arg.strip_prefix("--config="));
-        if let Some(v) = value {
-            if arg.starts_with("--geometry") {
-                let (cols, rows) = parse_geometry(v)?;
-                geometry = Some((cols, rows));
-            } else if arg.starts_with("--config") {
-                config = Some(PathBuf::from(v));
-            } else {
-                profile = Some(v.to_string());
-            }
-        } else if arg == "--geometry" || arg == "--profile" || arg == "--config" {
-            let Some(v) = args.get(i + 1) else {
-                return Err(Error::Usage(format!("missing value for {arg}")));
-            };
-            if arg == "--geometry" {
-                let (cols, rows) = parse_geometry(v)?;
-                geometry = Some((cols, rows));
-            } else if arg == "--config" {
-                config = Some(PathBuf::from(v));
-            } else {
-                profile = Some(v.clone());
-            }
-            i += 1;
-        } else if arg == "--list-fonts" {
-            list_fonts = true;
-        } else if arg == "--help" || arg == "-h" {
+        if arg == "--help" || arg == "-h" {
             return Ok(Startup::Help);
+        }
+        if arg == "--list-fonts" {
+            list_fonts = true;
+            i += 1;
+            continue;
+        }
+
+        // Both `--flag=value` and `--flag value` reduce to a key and value.
+        let (key, inline) = arg.split_once('=').unwrap_or((arg, ""));
+        let takes_value = matches!(key, "--geometry" | "--profile" | "--config");
+        let value = if !inline.is_empty() {
+            inline
+        } else if takes_value {
+            args.get(i + 1)
+                .map(String::as_str)
+                .ok_or_else(|| Error::Usage(format!("missing value for {key}")))?
+        } else {
+            return Err(Error::Usage(format!("unexpected argument `{arg}`")));
+        };
+        if takes_value {
+            i += 1;
+        }
+        match key {
+            "--geometry" => {
+                let (cols, rows) = parse_geometry(value)?;
+                geometry = Some((cols, rows));
+            }
+            "--profile" => profile = Some(value.to_owned()),
+            "--config" => config = Some(PathBuf::from(value)),
+            _ => return Err(Error::Usage(format!("unexpected argument `{arg}`"))),
         }
         i += 1;
     }

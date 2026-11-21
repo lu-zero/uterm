@@ -1,12 +1,12 @@
 use super::AppState;
 use crate::draw::{
-    blit_glyph, fill_rect, fill_rect_alpha, is_selected, resolve_ansi_color, resolve_named, rgb_u32,
+    blit_glyph, fill_rect, fill_rect_alpha, resolve_ansi_color, resolve_named, rgb_u32,
 };
 use fontdue::Font;
 use rio_vt::ansi::CursorShape;
 use rio_vt::config::colors::NamedColor;
 use rio_vt::crosswords::grid::Dimensions;
-use rio_vt::crosswords::Mode;
+use rio_vt::crosswords::pos::{Column, Line, Pos};
 use std::num::NonZeroU32;
 
 struct CellRender {
@@ -43,26 +43,31 @@ impl AppState {
         if self.glyph_cache.contains_key(&ch) || self.glyph_misses.contains(&ch) {
             return;
         }
-        if self.rasterize_char(ch).is_none() {
-            // No configured face can draw it: find a system face once, then
-            // keep it in the list so later glyphs can reuse it.
-            let found = crate::fonts::discover(&self.font_family, ch);
-            match found {
-                Some((bytes, index)) => {
-                    if let Ok(font) = crate::fonts::font_from(&bytes, index, &self.font_family) {
-                        self.fonts.push(font);
-                    }
+        let mut raster = self.rasterize_char(ch);
+        if raster.is_none() {
+            // No configured face can draw it. Try system candidates with
+            // fontdue too: fontique's charmap may disagree with fontdue's.
+            for (bytes, index) in crate::fonts::discover(&self.font_family, ch) {
+                let Ok(font) = crate::fonts::font_from(&bytes, index, &self.font_family) else {
+                    continue;
+                };
+                if !font.has_glyph(ch) {
+                    continue;
                 }
-                None => {
-                    self.glyph_misses.insert(ch);
-                    return;
+                self.fonts.push(font);
+                raster = self.rasterize_char(ch);
+                if raster.is_some() {
+                    break;
                 }
             }
         }
-        if let Some(raster) = self.rasterize_char(ch) {
-            self.glyph_cache.insert(ch, raster);
-        } else {
-            self.glyph_misses.insert(ch);
+        match raster {
+            Some(raster) => {
+                self.glyph_cache.insert(ch, raster);
+            }
+            None => {
+                self.glyph_misses.insert(ch);
+            }
         }
     }
 
@@ -94,6 +99,7 @@ impl AppState {
             default_bg,
             cur_u,
             selection,
+            display_offset,
         ) = {
             let Some(tab) = self.tabs.get(self.active) else {
                 return;
@@ -102,13 +108,17 @@ impl AppState {
             let rows_vec: Vec<_> = term.visible_rows();
             let ncols = term.grid.columns();
             let nrows = rows_vec.len();
-            let c = term.grid.cursor.pos;
-            let show = term.mode().contains(Mode::SHOW_CURSOR);
-            let shape = term.cursor_shape;
+            // rio-vt's cursor() handles hidden cursors, scrollback and spacers.
+            let cursor = term.cursor();
+            let show = cursor.is_visible();
+            let cursor_row = cursor.pos.row.0 - term.display_offset() as i32;
+            let cursor_col = cursor.pos.col.0;
+            let shape = cursor.content;
             let default_fg = resolve_named(&term.colors, NamedColor::Foreground, 0xd8, 0xd8, 0xd8);
             let default_bg = resolve_named(&term.colors, NamedColor::Background, 0x10, 0x10, 0x10);
             let cur_u = resolve_named(&term.colors, NamedColor::Cursor, 0xf0, 0xf0, 0xf0);
             let selection = term.selection.as_ref().and_then(|s| s.to_range(&term));
+            let display_offset = term.display_offset();
 
             let mut cells = Vec::new();
             if let Some(n) = nrows.checked_mul(ncols) {
@@ -143,7 +153,17 @@ impl AppState {
             term.reset_damage();
             term.damage_event_in_flight = false;
             (
-                cells, ncols, nrows, c.row.0, c.col.0, show, shape, default_bg, cur_u, selection,
+                cells,
+                ncols,
+                nrows,
+                cursor_row,
+                cursor_col,
+                show,
+                shape,
+                default_bg,
+                cur_u,
+                selection,
+                display_offset,
             )
         };
 
@@ -281,7 +301,9 @@ impl AppState {
                 if px >= bw {
                     break;
                 }
-                let selected = is_selected(selection, r as i32, c);
+                let selected = selection.is_some_and(|sel| {
+                    sel.contains(Pos::new(Line(r as i32 - display_offset as i32), Column(c)))
+                });
                 let bg = if selected { cell.fg } else { cell.bg };
                 if bg != default_bg || selected {
                     fill_rect(&mut buffer, bw, bh, px, py, self.cell_w, self.cell_h, bg);
@@ -307,7 +329,9 @@ impl AppState {
                     break;
                 }
 
-                let selected = is_selected(selection, r as i32, c);
+                let selected = selection.is_some_and(|sel| {
+                    sel.contains(Pos::new(Line(r as i32 - display_offset as i32), Column(c)))
+                });
                 let fg = if selected { cell.bg } else { cell.fg };
                 let ch = cell.ch;
                 if ch != '\0' && ch != ' ' {

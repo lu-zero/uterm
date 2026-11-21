@@ -1,36 +1,15 @@
 use crate::error::Error;
 use crate::event::Listener;
 use rio_vt::ansi::CursorShape;
-use rio_vt::crosswords::grid::Dimensions;
 use rio_vt::crosswords::Crosswords;
+use rio_vt::crosswords::CrosswordsSize;
 use rio_vt::event::sync::FairMutex;
 use rio_vt::event::{Msg, WindowId, WindowSize};
 use rio_vt::performer::Machine;
 use std::sync::Arc;
 
-pub(crate) struct TermSize {
-    pub(crate) cols: usize,
-    pub(crate) rows: usize,
-    pub(crate) cell_w: f32,
-    pub(crate) cell_h: f32,
-}
-
-impl Dimensions for TermSize {
-    fn total_lines(&self) -> usize {
-        self.rows
-    }
-    fn screen_lines(&self) -> usize {
-        self.rows
-    }
-    fn columns(&self) -> usize {
-        self.cols
-    }
-    fn square_width(&self) -> f32 {
-        self.cell_w
-    }
-    fn square_height(&self) -> f32 {
-        self.cell_h
-    }
+fn size(cols: usize, rows: usize, cell_w: usize, cell_h: usize) -> CrosswordsSize {
+    CrosswordsSize::new_with_dimensions(cols, rows, 0, 0, cell_w as u32, cell_h as u32)
 }
 
 pub(crate) struct PtyHandle {
@@ -94,12 +73,7 @@ impl Tab {
         let cols = usize::from(cols_u16);
         let rows = usize::from(rows_u16);
         let terminal = Arc::new(FairMutex::new(Crosswords::new(
-            TermSize {
-                cols,
-                rows,
-                cell_w: cell_w as f32,
-                cell_h: cell_h as f32,
-            },
+            size(cols, rows, cell_w, cell_h),
             CursorShape::Block,
             listener.clone(),
             WindowId::from(0),
@@ -142,15 +116,14 @@ impl Tab {
         cell_h: usize,
     ) -> Result<(), Error> {
         let (cols_u16, rows_u16) = checked_grid(cols, rows)?;
-        let size = TermSize {
-            cols: usize::from(cols_u16),
-            rows: usize::from(rows_u16),
-            cell_w: cell_w as f32,
-            cell_h: cell_h as f32,
-        };
         {
             let mut term = self.terminal.lock();
-            term.resize(size);
+            term.resize(size(
+                usize::from(cols_u16),
+                usize::from(rows_u16),
+                cell_w,
+                cell_h,
+            ));
         }
         let _ = self.pty.channel.send(Msg::Resize(WindowSize {
             rows: rows_u16,

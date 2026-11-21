@@ -139,18 +139,22 @@ impl AppState {
             resize_overlay: None,
             preset_index: 0,
         };
-        st.sync_font_metrics()?;
+        st.sync_font_metrics(st.window.scale_factor())?;
         Ok(st)
     }
 
-    pub(crate) fn sync_font_metrics(&mut self) -> Result<(), Error> {
-        let scale = self.window.scale_factor() as f32;
+    pub(crate) fn sync_font_metrics(&mut self, scale: f64) -> Result<(), Error> {
+        let scale = scale as f32;
         let font_px = (self.font_size * scale * (96.0 / 72.0)).round().max(4.0);
         let primary = &self.fonts[0];
         let lm = primary
             .horizontal_line_metrics(font_px)
             .ok_or(Error::FontMetrics(font_px))?;
-        let (m_m, _) = primary.rasterize('M', font_px);
+        let m_m = primary.metrics('M', font_px);
+        if self.font_px != font_px {
+            self.glyph_cache.clear();
+            self.glyph_misses.clear();
+        }
         self.font_px = font_px;
         self.cell_w = m_m.advance_width.ceil().max(1.0) as usize;
         self.cell_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as usize;

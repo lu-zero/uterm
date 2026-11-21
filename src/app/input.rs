@@ -145,11 +145,7 @@ impl AppState {
 
         if self.mouse_report_mode() {
             self.local_pointer = LocalPointerState::Idle;
-            if state == ElementState::Pressed {
-                self.mouse_buttons[idx] = true;
-            } else {
-                self.mouse_buttons[idx] = false;
-            }
+            self.mouse_buttons[idx] = state == ElementState::Pressed;
             if let Some((col, row, _)) = self.terminal_cell_at(x, y) {
                 self.send_mouse_report(
                     btn_code,

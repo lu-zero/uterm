@@ -11,10 +11,13 @@ use fontique::{
     Collection, CollectionOptions, FallbackKey, FontStyle, FontWeight, FontWidth, GenericFamily,
     QueryFamily, QueryStatus, Script, SourceCache, SourceCacheOptions,
 };
+use std::cell::RefCell;
 
 /// The bundled face: Maple Mono NF, with Nerd Font icons and Latin/Cyrillic.
 pub(crate) const MAPLE_TTF: &[u8] = include_bytes!("../MapleMonoNF.ttf");
 pub(crate) const MAPLE_FACE: &str = "maple";
+/// The family name fontique knows the bundled face by.
+pub(crate) const MAPLE_FAMILY: &str = "Maple Mono NF";
 
 /// The bundled default, also used as the primary family for fallback.
 pub(crate) const DEFAULT_FACE: &str = MAPLE_FACE;
@@ -24,6 +27,8 @@ pub(crate) fn font_from(bytes: &[u8], index: u32, label: &str) -> Result<Font, E
         bytes,
         FontSettings {
             collection_index: index,
+            // We only rasterize single chars, never indexed substitutions.
+            load_substitutions: false,
             ..FontSettings::default()
         },
     )
@@ -71,34 +76,48 @@ pub(crate) fn font_families() -> Vec<String> {
     families
 }
 
-/// Find an installed font covering `ch`, preferring `primary_family` and then
-/// monospace, system UI and sans families before the platform's script fallbacks.
-pub(crate) fn discover(primary_family: &str, ch: char) -> Option<(Vec<u8>, u32)> {
-    let mut collection = collection();
-    let mut cache = SourceCache::new(SourceCacheOptions::default());
-    let mut query = collection.query(&mut cache);
-    query.set_families([
-        QueryFamily::Named(primary_family),
-        QueryFamily::Generic(GenericFamily::Monospace),
-        QueryFamily::Generic(GenericFamily::SystemUi),
-        QueryFamily::Generic(GenericFamily::SansSerif),
-    ]);
-    query.set_fallbacks(FallbackKey::new(script_of(ch), None));
+thread_local! {
+    /// System-font enumeration is expensive; keep it for the event-loop thread.
+    static SYSTEM: RefCell<Option<(Collection, SourceCache)>> = const { RefCell::new(None) };
+}
 
-    let mut found = None;
-    query.matches_with(|font| {
-        if font
-            .charmap()
-            .and_then(|charmap| charmap.map(ch))
-            .is_some_and(|glyph| glyph != 0)
-        {
-            found = Some((font.blob.as_ref().to_vec(), font.index));
-            QueryStatus::Stop
-        } else {
+/// Candidate faces covering `ch`, in preference order: `primary_family`, then
+/// monospace, system UI and sans families, then the platform's script fallbacks.
+/// The caller tries each with fontdue, whose charmap can differ from fontique's.
+pub(crate) fn discover(primary_family: &str, ch: char) -> Vec<(Vec<u8>, u32)> {
+    SYSTEM.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let (collection, cache) = slot.get_or_insert_with(|| {
+            (
+                collection(),
+                SourceCache::new(SourceCacheOptions::default()),
+            )
+        });
+        let mut query = collection.query(cache);
+        query.set_families([
+            QueryFamily::Named(primary_family),
+            QueryFamily::Generic(GenericFamily::Monospace),
+            QueryFamily::Generic(GenericFamily::SystemUi),
+            QueryFamily::Generic(GenericFamily::SansSerif),
+        ]);
+        query.set_fallbacks(FallbackKey::new(script_of(ch), None));
+
+        let mut candidates = Vec::new();
+        query.matches_with(|font| {
+            if candidates.len() >= 8 {
+                return QueryStatus::Stop;
+            }
+            if font
+                .charmap()
+                .and_then(|charmap| charmap.map(ch))
+                .is_some_and(|glyph| glyph != 0)
+            {
+                candidates.push((font.blob.as_ref().to_vec(), font.index));
+            }
             QueryStatus::Continue
-        }
-    });
-    found
+        });
+        candidates
+    })
 }
 
 /// The script whose fallback families are most likely to cover `ch`. Fontique
@@ -142,11 +161,12 @@ mod tests {
 
     #[test]
     fn discovery_finds_a_font_that_covers_the_codepoint() {
-        let Some((bytes, index)) = discover(MAPLE_FACE, '日') else {
-            return;
-        };
-        let face = font_from(&bytes, index, "discovered").unwrap();
-        assert!(face.has_glyph('日'));
+        let candidates = discover(MAPLE_FAMILY, '日');
+        assert!(candidates.iter().any(|(bytes, index)| {
+            font_from(bytes, *index, "discovered")
+                .map(|face| face.has_glyph('日'))
+                .unwrap_or(false)
+        }));
     }
 
     #[test]
