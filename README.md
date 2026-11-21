@@ -8,16 +8,16 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 
 - PTY-backed interactive shell (default login shell via `rio_vt::teletypewriter::create_pty_with_spawn`)
 - VT state and parsing driven by `rio_vt::crosswords::Crosswords` + `performer::Machine`
-- HiDPI-aware cell sizing and rendering with bundled **Cascadia Code NF**
+- HiDPI-aware cell sizing and rendering with bundled **Cascadia Code NF** or a configurable fallback list of faces (`config.toml`)
 - Per-cell foreground/background color rendering (ANSI 16/256/truecolor, named/indexed palette resolution, inverse)
-- Basic keyboard input (text, arrows/home/end/page/delete, Ctrl/Alt combos)
+- Basic keyboard input (text, arrows/home/end/page/delete, F1–F12, Ctrl/Alt combos)
 - Minimal tab support (one shell per tab) with a styled tab bar showing per-tab titles (OSC/title updates), clickable tabs, and per-tab close buttons; tabs also close when the shell exits (e.g. `Ctrl+D`) or via shortcut
 - Window title follows the active tab title
 - Local mouse selection/highlight in the terminal area when mouse reporting is disabled by the application
 - Basic copy/paste integration for local selection and clipboard (`Ctrl+Shift+C` to copy selection, `Ctrl+Shift+V` to paste; bracketed paste used when enabled by the shell/app)
 - OSC 52 clipboard store/load integration (terminal apps can set/read clipboard via escape sequences, routed per tab)
 - Basic mouse reporting to the terminal (SGR/UTF-8 modes) for button, motion/drag, and wheel events when enabled by applications
-- Custom launch size via `--geometry WxH` (cells) or `--profile sh|mc|ssh`; an explicit geometry wins over a profile
+- Custom launch size via `--geometry WxH` (cells) or `--profile NAME` (`sh`, `mc`, `ssh`, or a profile in `config.toml`); an explicit geometry wins over a profile
 - New window via `Ctrl+Shift+N` (spawns an independent uterm process with the same arguments), preset sizes via `Ctrl+Shift+=`/`-`, and a transient `cols x rows` overlay during resizing
 
 ### Keybindings
@@ -45,6 +45,40 @@ cargo run -- --geometry 128x40
 cargo run -- --profile mc
 ```
 
+### Fonts
+
+With no config file, uterm uses the bundled Cascadia Code NF. To add faces, create `~/.config/uterm/config.toml` (or `$XDG_CONFIG_HOME/uterm/config.toml`, or pass `--config PATH`, or set `$UTERM_CONFIG`).
+
+`fonts` is a fallback list: faces are tried in order, the first sets the cell size from the advance of `M`, and each later face supplies glyphs the earlier ones lack. `cascadia` names the bundled face, so a typical list pairs it with a CJK coverage font:
+
+```toml
+fonts = ["cascadia", "/path/to/cjk.ttf"]
+```
+
+Paths may be absolute, relative to the config file, or `~/...`. An empty or missing `fonts` list is the same as `fonts = ["cascadia"]`; a real file named `cascadia` should be written as `./cascadia`. See `config.toml` for a fuller example.
+
+### Profiles
+
+`--profile NAME` picks a size and, when the profile lists fonts, its own fallback list.
+
+Built in, until the file replaces that size:
+
+| name | size |
+| --- | --- |
+| `ssh` | 128×40 |
+| `sh` | 80×25 |
+| `mc` | 80×24 |
+
+Any other name has to be written in the file. An unknown name is an error. `--geometry WxH` wins over the profile size.
+
+```toml
+[profiles.ssh]
+geometry = "128x40"
+fonts = ["cascadia", "/path/to/cjk.ttf"]
+```
+
+A profile `geometry` replaces the built-in size of the same name. Omit `fonts` to keep the top-level list, or set `fonts = []` to keep only bundled Cascadia.
+
 `Cargo.lock` is not committed (library-style noise for this small app); dependency resolution comes from `Cargo.toml`.
 
 On Linux the `clipboard`, `x11` and `wayland` features are enabled by default (forwarding to `rio-vt`), matching Rio’s clipboard backend pattern. You can override with cargo features if needed (e.g. `cargo build --no-default-features --features clipboard,x11`).
@@ -54,6 +88,7 @@ On Linux the `clipboard`, `x11` and `wayland` features are enabled by default (f
 Terminal route IDs are `Tab.id` values and are used for tab-exit routing (`UiEvent::TabExited(id)`). This is a small embedded-terminal app, so integer IDs are sufficient.
 
 - Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
+- Wide characters occupy two cells in the grid and are drawn as one glyph in the first cell. A later face can supply the Japanese glyph; a bitmap wider than the cell continues into the next cell
 - Basic local selection copy/paste and OSC 52 clipboard handling; no IME, xterm/kitty keyboard protocol, or clipboard popup on paste (plain `Ctrl+V` into terminal)
 - No scrollback UI and no rendered graphics protocols
 - Simple tab bar UI (titles and close buttons supported, but no tab reordering, dragging, or advanced widgets)

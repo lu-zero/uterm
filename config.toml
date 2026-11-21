@@ -1,0 +1,26 @@
+# Example configuration for uterm. Copy to ~/.config/uterm/config.toml,
+# or pass --config PATH. A missing default file keeps bundled Cascadia.
+#
+# Search order: --config, $UTERM_CONFIG, $XDG_CONFIG_HOME/uterm/config.toml,
+# ~/.config/uterm/config.toml.
+
+# `fonts` is a fallback list: the first face sets the cell size from `M`, and
+# each later face adds glyphs the earlier ones lack. `cascadia` is the bundled
+# Cascadia Code NF (Latin, Cyrillic, no CJK). Paths are absolute, relative to
+# this file, or ~/... . A real file named cascadia is written as ./cascadia.
+# An empty or missing `fonts` list keeps bundled Cascadia.
+
+# fonts = [
+#   "cascadia",
+#   "/path/to/cjk.ttf",
+# ]
+
+# Built-in profiles: ssh = 128x40, sh = 80x25, mc = 80x24. A profile here
+# replaces that size when it sets `geometry`. Any other name must be defined
+# here; unknown names are errors. --geometry wins over both.
+# Omit `fonts` on a profile to inherit the list above; `fonts = []` keeps
+# bundled Cascadia only.
+
+# [profiles.ssh]
+# geometry = "128x40"
+# fonts = ["cascadia", "/path/to/cjk.ttf"]
