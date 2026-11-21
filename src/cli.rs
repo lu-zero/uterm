@@ -115,13 +115,14 @@ pub(crate) fn parse_args_from<S: AsRef<OsStr>>(
             list_fonts: cli.list_fonts,
         })),
         Err(err) => match err.kind() {
-            ErrorKind::HelpRequested => {
-                Ok(Startup::Help(err.render_help("uterm").unwrap_or_default()))
-            }
+            ErrorKind::HelpRequested => Ok(Startup::Help(
+                err.render_help_styled("uterm", help::Style::auto())
+                    .unwrap_or_default(),
+            )),
             ErrorKind::VersionRequested => {
                 Ok(Startup::Help(err.version_text("uterm").unwrap_or_default()))
             }
-            _ => Err(Error::Usage(err.render(help::Style::PLAIN))),
+            _ => Err(Error::Usage(err.render(help::Style::auto_stderr()))),
         },
     }
 }
