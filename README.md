@@ -63,30 +63,9 @@ font_size = 14
 
 ### Profiles
 
-`--profile NAME` picks a size and, when the profile lists fonts, its own fallback list.
+`--profile NAME` picks a startup size. Built in: `ssh` (128×40), `sh` (80×25), and `mc` (80×24); the built-ins only set the size and start the login shell. Custom profiles in `config.toml` can also set fonts, font size, and a command with arguments.
 
-Built in, until the file replaces that size:
-
-| name | size |
-| --- | --- |
-| `ssh` | 128×40 |
-| `sh` | 80×25 |
-| `mc` | 80×24 |
-
-Any other name has to be written in the file. An unknown name is an error. `--geometry WxH` wins over the profile size.
-
-```toml
-[profiles.ssh]
-geometry = "128x40"
-fonts = ["default", "/path/to/cjk.ttf"]
-font_size = 13
-
-[profiles.mc]
-command = "mc"
-args = ["-d"]
-```
-
-A profile `geometry` replaces the built-in size of the same name, and `font_size` replaces the top-level size. Omit `fonts` to keep the top-level list, or set `fonts = []` to keep only the bundled face. `command` and `args` replace the login shell with a program and its arguments; words after `--` on the command line override both. With no command configured or given, uterm starts the user's login shell.
+See [docs/profiles.md](./docs/profiles.md) for the full reference, precedence rules, and examples.
 
 `Cargo.lock` is not committed (library-style noise for this small app); dependency resolution comes from `Cargo.toml`.
 
