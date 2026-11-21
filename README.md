@@ -52,14 +52,14 @@ cargo run -- --profile mc -- mc
 
 With no config file, uterm uses the bundled Maple Mono NF. When a glyph is missing, uterm looks it up in installed system fonts (preferring the primary family, then monospace, system UI, and script-specific fallbacks) and caches the face it finds. To control the faces yourself, create `~/.config/uterm/config.toml` (or `$XDG_CONFIG_HOME/uterm/config.toml`, or pass `--config PATH`, or set `$UTERM_CONFIG`).
 
-`fonts` is a fallback list: faces are tried in order, the first sets the cell size from the advance of `M`, and each later face supplies glyphs the earlier ones lack. Entries can be the bundled keyword `maple`, an installed family name, or a path:
+`fonts` is a fallback list: faces are tried in order, the first sets the cell size from the advance of `M`, and each later face supplies glyphs the earlier ones lack. Entries can be the bundled keyword `default`, an installed family name, or a path:
 
 ```toml
-fonts = ["maple", "Menlo", "/path/to/cjk.ttf"]
+fonts = ["default", "Menlo", "/path/to/cjk.ttf"]
 font_size = 14
 ```
 
-A bare name is a family; a path needs a separator, a leading `.` or `~`, or a `.ttf`/`.otf`/`.ttc` extension. Paths may be absolute, relative to the config file, or `~/...`. An empty or missing `fonts` list is the same as `fonts = ["maple"]`. `font_size` is in points and defaults to 14. Run `uterm --list-fonts` to see the bundled keyword and the installed font families. See `config.toml` for a fuller example.
+`default` always means the face compiled into uterm, so configs survive a font change. A bare name is a family; a path needs a separator, a leading `.` or `~`, or a `.ttf`/`.otf`/`.ttc` extension. Paths may be absolute, relative to the config file, or `~/...`. An empty or missing `fonts` list is the same as `fonts = ["default"]`. `font_size` is in points and defaults to 14. Run `uterm --list-fonts` to see the bundled keyword and the installed font families. See `config.toml` for a fuller example.
 
 ### Profiles
 
@@ -78,11 +78,11 @@ Any other name has to be written in the file. An unknown name is an error. `--ge
 ```toml
 [profiles.ssh]
 geometry = "128x40"
-fonts = ["maple", "/path/to/cjk.ttf"]
+fonts = ["default", "/path/to/cjk.ttf"]
 font_size = 13
 ```
 
-A profile `geometry` replaces the built-in size of the same name, and `font_size` replaces the top-level size. Omit `fonts` to keep the top-level list, or set `fonts = []` to keep only bundled Maple.
+A profile `geometry` replaces the built-in size of the same name, and `font_size` replaces the top-level size. Omit `fonts` to keep the top-level list, or set `fonts = []` to keep only the bundled face.
 
 `Cargo.lock` is not committed (library-style noise for this small app); dependency resolution comes from `Cargo.toml`.
 

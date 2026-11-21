@@ -494,7 +494,7 @@ impl AppState {
 mod tests {
     use super::rasterize_from;
     use crate::draw::blit_glyph;
-    use crate::fonts::{bundled_font, MAPLE_FACE};
+    use crate::fonts::{bundled_font, DEFAULT_FACE};
     use fontdue::{Font, Metrics};
 
     fn cell_width(font: &Font, px: f32) -> (usize, f32) {
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn maple_paints_latin_and_ukrainian_and_skips_japanese() {
-        let font = bundled_font(MAPLE_FACE).unwrap();
+        let font = bundled_font(DEFAULT_FACE).unwrap();
         let fonts = [font];
         let px = 32.0;
         let (_cell_w, m_advance) = cell_width(&fonts[0], px);
@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn a_wide_bitmap_continues_into_the_next_cell() {
-        let font = bundled_font(MAPLE_FACE).unwrap();
+        let font = bundled_font(DEFAULT_FACE).unwrap();
         let (cell_w, _) = cell_width(&font, 32.0);
         let metrics = Metrics {
             width: cell_w * 3,

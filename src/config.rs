@@ -9,7 +9,7 @@
 //! A missing default file keeps the bundled Maple Mono NF. A path given with
 //! `--config` or `$UTERM_CONFIG` must exist. `fonts` is a fallback list, tried
 //! in order. The first face sets the cell size. Each later face adds glyphs
-//! the earlier faces lack. Entries are the bundled keyword `maple`, an
+//! the earlier faces lack. Entries are the bundled keyword `default`, an
 //! installed family name, or a font path; glyphs none of them cover are
 //! looked up in system fonts. `font_size` sets the point size, default 14.
 //!
@@ -234,7 +234,7 @@ fn font_list(raw_paths: &[String], config_dir: &Path) -> Result<Vec<FontSource>,
                 "unsupported home path `{raw}`; use ~ or ~/... "
             )));
         }
-        if raw == fonts::MAPLE_FACE {
+        if raw == fonts::DEFAULT_FACE {
             sources.push(FontSource::Bundled(raw.clone()));
         } else if looks_like_path(raw) {
             sources.push(FontSource::File(expand_font_path(raw, config_dir)?));
@@ -438,20 +438,23 @@ geometry = "128x40"
     }
 
     #[test]
-    fn maple_name_is_the_bundled_face() {
-        let text = "fonts = [\"maple\", \"jp.ttf\"]\n";
+    fn default_name_is_the_bundled_face() {
+        let text = "fonts = [\"default\", \"jp.ttf\"]\n";
         let fonts = parse_config(text, Path::new("/cfg")).unwrap().fonts;
         assert_eq!(
             fonts,
             vec![
-                FontSource::Bundled("maple".to_owned()),
+                FontSource::Bundled("default".to_owned()),
                 FontSource::File(PathBuf::from("/cfg/jp.ttf")),
             ]
         );
         // A relative path keeps the file, including one spelled like the keyword.
-        let text = "fonts = [\"./maple\"]\n";
+        let text = "fonts = [\"./default\"]\n";
         let fonts = parse_config(text, Path::new("/cfg")).unwrap().fonts;
-        assert_eq!(fonts, vec![FontSource::File(PathBuf::from("/cfg/./maple"))]);
+        assert_eq!(
+            fonts,
+            vec![FontSource::File(PathBuf::from("/cfg/./default"))]
+        );
     }
 
     #[test]

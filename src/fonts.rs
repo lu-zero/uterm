@@ -1,6 +1,6 @@
 //! Font faces: bundled defaults, installed families, and glyph fallback.
 //!
-//! A `fonts` entry in the config is either the bundled keyword `maple`, a
+//! A `fonts` entry in the config is either the bundled keyword `default`, a
 //! file path, or an installed family name. `fontique` resolves
 //! family names and finds a system face when a codepoint is missing; fontdue
 //! rasterizes the bytes either way.
@@ -15,12 +15,10 @@ use std::cell::RefCell;
 
 /// The bundled face: Maple Mono NF, with Nerd Font icons and Latin/Cyrillic.
 pub(crate) const MAPLE_TTF: &[u8] = include_bytes!("../MapleMonoNF.ttf");
-pub(crate) const MAPLE_FACE: &str = "maple";
-/// The family name fontique knows the bundled face by.
+/// The config keyword for the bundled face, whatever font it is.
+pub(crate) const DEFAULT_FACE: &str = "default";
+/// The family name fontique knows the current bundled face by.
 pub(crate) const MAPLE_FAMILY: &str = "Maple Mono NF";
-
-/// The bundled default, also used as the primary family for fallback.
-pub(crate) const DEFAULT_FACE: &str = MAPLE_FACE;
 
 pub(crate) fn font_from(bytes: &[u8], index: u32, label: &str) -> Result<Font, Error> {
     Font::from_bytes(
@@ -36,7 +34,7 @@ pub(crate) fn font_from(bytes: &[u8], index: u32, label: &str) -> Result<Font, E
 }
 
 pub(crate) fn bundled_font(name: &str) -> Result<Font, Error> {
-    if name != MAPLE_FACE {
+    if name != DEFAULT_FACE {
         return Err(Error::Font(format!("unknown bundled font `{name}`")));
     }
     font_from(MAPLE_TTF, 0, name)
@@ -72,7 +70,7 @@ pub(crate) fn font_families() -> Vec<String> {
         .map(str::to_owned)
         .collect();
     families.sort_by_key(|name| name.to_lowercase());
-    families.insert(0, MAPLE_FACE.to_owned());
+    families.insert(0, DEFAULT_FACE.to_owned());
     families
 }
 
@@ -154,7 +152,7 @@ mod tests {
 
     #[test]
     fn bundled_faces_load_and_have_their_expected_coverage() {
-        let maple = bundled_font(MAPLE_FACE).unwrap();
+        let maple = bundled_font(DEFAULT_FACE).unwrap();
         assert!(maple.has_glyph('A'));
         assert!(bundled_font("no such face").is_err());
     }
@@ -172,6 +170,6 @@ mod tests {
     #[test]
     fn enumeration_starts_with_the_bundled_face() {
         let families = font_families();
-        assert_eq!(families[0], MAPLE_FACE);
+        assert_eq!(families[0], DEFAULT_FACE);
     }
 }

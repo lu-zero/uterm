@@ -6,15 +6,16 @@
 
 # `fonts` is a fallback list: the first face sets the cell size from `M`, and
 # each later face adds glyphs the earlier ones lack. Entries are the bundled
-# keyword `maple`, an installed family name, or a path. Paths are absolute,
-# relative to this file, or ~/... . A bare name is a family, so a real file
-# named maple is written as ./maple. An empty or missing `fonts` list keeps
-# bundled Maple. Glyphs none of these cover are looked up in system fonts.
+# keyword `default`, an installed family name, or a path. `default` follows
+# the bundled face if it changes. Paths are absolute, relative to this file,
+# or ~/... . A bare name is a family, so a real file named default is written
+# as ./default. An empty or missing `fonts` list keeps the bundled face.
+# Glyphs none of these cover are looked up in system fonts.
 #
 # font_size = 14
 
 # fonts = [
-#   "maple",
+#   "default",
 #   "Menlo",
 #   "/path/to/cjk.ttf",
 # ]
@@ -23,9 +24,9 @@
 # replaces that size when it sets `geometry`, and can override `font_size`.
 # Any other name must be defined here; unknown names are errors. --geometry
 # wins over both. Omit `fonts` on a profile to inherit the list above;
-# `fonts = []` keeps bundled Maple only.
+# `fonts = []` keeps only the bundled face.
 
 # [profiles.ssh]
 # geometry = "128x40"
 # font_size = 13
-# fonts = ["maple", "/path/to/cjk.ttf"]
+# fonts = ["default", "/path/to/cjk.ttf"]
