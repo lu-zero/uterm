@@ -10,19 +10,26 @@ keywords = ["terminal", "emulator"]
 categories = ["command-line-utilities"]
 
 [features]
-default = ["clipboard", "x11", "wayland"]
+default = ["x11", "wayland", "bundled-font", "fallback-common", "emoji-fallback"]
+# Everything except the emoji data crate (and the opt-in allocator).
+lean = ["x11", "wayland", "bundled-font", "fallback-common"]
+x11 = ["winit/x11", "softbuffer/x11", "softbuffer/x11-dlopen", "rio-vt/x11"]
+wayland = [
+    "winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita",
+    "softbuffer/wayland", "softbuffer/wayland-dlopen", "rio-vt/wayland",
+]
+bundled-font = ["term-atlas/bundled-font"]
+fallback-common = ["term-atlas/fallback-common"]
+emoji-fallback = ["term-atlas/emoji-fallback"]
 mimalloc = ["dep:mimalloc"]
-clipboard = ["rio-vt/clipboard"]
-x11 = ["rio-vt/x11"]
-wayland = ["rio-vt/wayland"]
 
 [dependencies]
-rio-vt = { version = "0.5", default-features = true }
-winit = "0.30"
-softbuffer = "0.4"
+rio-vt = { version = "0.5", default-features = false, features = ["pty", "clipboard"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+softbuffer = { version = "0.4", default-features = false }
 fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 winnow-args = "0.6"
-term-atlas = "0.1.4"
+term-atlas = { version = "0.1.4", default-features = false }
 mimalloc = { version = "0.1.52", optional = true }

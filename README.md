@@ -48,6 +48,25 @@ cargo run -- --profile mc
 cargo run -- --profile mc -- mc
 ```
 
+### Build variants
+
+The default build enables both window backends, the bundled font, the compact
+CJK fallback and the emoji fallback. A `lean` build drops only the emoji data
+crate, keeping clipboard/OSC 52, `--list-fonts`, Japanese coverage, profiles,
+tabs and both backends:
+
+```bash
+cargo build --release --no-default-features --features lean
+# optionally use mimalloc instead of the system allocator:
+cargo build --release --features mimalloc
+```
+
+The core (PTY, config, clipboard, font enumeration, CJK fallback) is not
+optional. `--no-default-features` alone does not select a window backend, so
+use `lean` or name a backend (`x11`, `wayland`) explicitly. On macOS the lean
+binary is about 760 KiB smaller than the default; build time is effectively
+unchanged there because the backends are platform-gated.
+
 ### Fonts
 
 With no config file, uterm uses the bundled Maple Mono NF. When a glyph is missing, uterm looks it up in installed system fonts (preferring the primary family, then monospace, system UI, and script-specific fallbacks) and caches the face it finds. To control the faces yourself, create `~/.config/uterm/config.toml` (or `$XDG_CONFIG_HOME/uterm/config.toml`, or pass `--config PATH`, or set `$UTERM_CONFIG`).
