@@ -26,7 +26,11 @@ not a baseline for the current tree.
 A first local run on macOS (release build, sampled via deltas of `ps -o time=`)
 gave a median of 16.7% CPU. Building a cluster `String` for every cell every
 frame accounted for part of that: avoiding the allocation for cells without
-zero-width extras brought the median to 12.9%. These are macOS numbers; the
+zero-width extras brought one median to 12.9%. Reusing the per-frame row/cell/
+rect buffers and an optional mimalloc allocator were then measured back to
+back: 17.6% (default) vs 16.8%/17.8% (mimalloc). The spread is larger than the
+difference, so neither is a proven win on this noisy desktop; the dominant
+cost is likely the full-frame softbuffer repaint. These are macOS numbers; the
 Linux baseline is still needed.
 
 ## Wayland exit paths (#9)

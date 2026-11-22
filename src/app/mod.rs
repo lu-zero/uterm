@@ -9,13 +9,15 @@ use crate::error::Error;
 use crate::event::UiEvent;
 use crate::terminal::{cells_to_px, Tab};
 use rio_vt::clipboard::{Clipboard, ClipboardType};
+use rio_vt::crosswords::grid::row::Row;
+use rio_vt::crosswords::square::Square;
 use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
 use softbuffer::Surface;
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use term_atlas::{Atlas, Face, PixelFormat};
+use term_atlas::{Atlas, Face, GlyphRect, PixelFormat};
 use winit::dpi::PhysicalSize;
 use winit::event::Modifiers;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
@@ -77,6 +79,10 @@ pub(crate) struct AppState {
     /// Primary face and its glyph atlas; the atlas handles fallback and caching.
     pub(crate) face: Face,
     pub(crate) atlas: Atlas,
+    /// Reused per-frame buffers, kept here to avoid reallocating each redraw.
+    pub(crate) rows: Vec<Row<Square>>,
+    pub(crate) cells: Vec<render::CellRender>,
+    pub(crate) cell_rects: Vec<Option<GlyphRect>>,
     /// Command from `--`, used for every tab instead of the default shell.
     pub(crate) command: Vec<String>,
     /// Point size from the config, before DPI scaling.
@@ -129,6 +135,9 @@ impl AppState {
             next_tab_id: 1,
             face,
             atlas,
+            rows: Vec::new(),
+            cells: Vec::new(),
+            cell_rects: Vec::new(),
             command,
             font_size,
             cell_w,

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use term_atlas::GlyphRect;
 
-struct CellRender {
+pub(crate) struct CellRender {
     ch: char,
     /// Base code point plus combining marks / variation selectors, only when present.
     cluster: Option<String>,
@@ -45,6 +45,11 @@ impl AppState {
             return;
         }
 
+        // Reuse the frame buffers; clearing keeps their allocated capacity.
+        let mut rows = std::mem::take(&mut self.rows);
+        let mut cells = std::mem::take(&mut self.cells);
+        cells.clear();
+
         let (
             cells,
             ncols,
@@ -62,9 +67,9 @@ impl AppState {
                 return;
             };
             let mut term = tab.terminal.lock();
-            let rows_vec: Vec<_> = term.visible_rows();
+            term.fill_visible_rows(&mut rows);
             let ncols = term.grid.columns();
-            let nrows = rows_vec.len();
+            let nrows = rows.len();
             // rio-vt's cursor() handles hidden cursors, scrollback and spacers.
             let cursor = term.cursor();
             let show = cursor.is_visible();
@@ -77,11 +82,7 @@ impl AppState {
             let selection = term.selection.as_ref().and_then(|s| s.to_range(&term));
             let display_offset = term.display_offset();
 
-            let mut cells = Vec::new();
-            if let Some(n) = nrows.checked_mul(ncols) {
-                let _ = cells.try_reserve(n);
-            }
-            for (r, row) in rows_vec.iter().enumerate() {
+            for (r, row) in rows.iter().enumerate() {
                 for col in 0..ncols {
                     let Some(square) = row.inner.get(col) else {
                         cells.push(CellRender {
@@ -148,6 +149,7 @@ impl AppState {
                 display_offset,
             )
         };
+        self.rows = rows;
 
         let tab_layouts = self.tab_layouts(width as usize);
         // Rasterize every glyph before borrowing the framebuffer from self.
@@ -169,22 +171,25 @@ impl AppState {
             }
         }
         drop(need);
-        let cell_rects: Vec<Option<GlyphRect>> = cells
-            .iter()
-            .map(|cell| {
-                if cell.cells == 0 || cell.ch == '\0' || cell.ch == ' ' {
-                    None
-                } else if let Some(text) = &cell.cluster {
-                    self.atlas.ensure_str(text, cell.cells)
-                } else {
-                    self.atlas.ensure(cell.ch, cell.cells)
-                }
-            })
-            .collect();
+        let mut cell_rects = std::mem::take(&mut self.cell_rects);
+        cell_rects.clear();
+        cell_rects.extend(cells.iter().map(|cell| {
+            if cell.cells == 0 || cell.ch == '\0' || cell.ch == ' ' {
+                None
+            } else if let Some(text) = &cell.cluster {
+                self.atlas.ensure_str(text, cell.cells)
+            } else {
+                self.atlas.ensure(cell.ch, cell.cells)
+            }
+        }));
 
         let mut buffer = match self.surface.buffer_mut() {
             Ok(b) => b,
-            Err(_) => return,
+            Err(_) => {
+                self.cells = cells;
+                self.cell_rects = cell_rects;
+                return;
+            }
         };
         buffer.fill(default_bg);
 
@@ -453,6 +458,8 @@ impl AppState {
             }
         }
 
+        self.cells = cells;
+        self.cell_rects = cell_rects;
         let _ = buffer.present();
     }
 

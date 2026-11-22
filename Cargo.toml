@@ -11,6 +11,7 @@ categories = ["command-line-utilities"]
 
 [features]
 default = ["clipboard", "x11", "wayland"]
+mimalloc = ["dep:mimalloc"]
 clipboard = ["rio-vt/clipboard"]
 x11 = ["rio-vt/x11"]
 wayland = ["rio-vt/wayland"]
@@ -24,3 +25,4 @@ serde = { version = "1", features = ["derive"] }
 toml = "1"
 winnow-args = "0.6"
 term-atlas = "0.1.4"
+mimalloc = { version = "0.1.52", optional = true }
