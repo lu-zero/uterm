@@ -2,6 +2,12 @@
 name = "uterm"
 version = "0.1.0"
 edition = "2021"
+description = "A tiny terminal emulator built on Rio's VT/PTY underpinnings"
+license = "MIT"
+repository = "https://github.com/lu-zero/uterm"
+readme = "README.md"
+keywords = ["terminal", "emulator"]
+categories = ["command-line-utilities"]
 
 [features]
 default = ["clipboard", "x11", "wayland"]
