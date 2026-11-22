@@ -292,12 +292,16 @@ impl AppState {
     }
 
     pub(crate) fn grid_dims_from(&self, width: usize, height: usize) -> (usize, usize) {
-        let max_cells = usize::from(u16::MAX);
-        let cols = (width / self.cell_w.max(1)).clamp(2, max_cells);
-        let total_rows = (height / self.cell_h.max(1)).clamp(2, max_cells);
-        let content_rows = total_rows.saturating_sub(1).clamp(1, max_cells);
-        (cols, content_rows)
+        grid_dims_from(width, height, self.cell_w, self.cell_h)
     }
+}
+
+fn grid_dims_from(width: usize, height: usize, cell_w: usize, cell_h: usize) -> (usize, usize) {
+    let max_cells = usize::from(u16::MAX);
+    let cols = (width / cell_w.max(1)).clamp(2, max_cells);
+    let total_rows = (height / cell_h.max(1)).clamp(2, max_cells);
+    let content_rows = total_rows.saturating_sub(1).clamp(1, max_cells);
+    (cols, content_rows)
 }
 
 impl AppState {
@@ -365,5 +369,20 @@ impl AppState {
 
     pub(crate) fn paste_clipboard(&mut self) {
         self.paste_from(ClipboardType::Clipboard);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preset_sizes_map_back_to_the_same_grid() {
+        let (cell_w, cell_h) = (10, 20);
+        for &(cols, rows) in PRESET_SIZES {
+            let width = cols * cell_w;
+            let height = (rows + 1) * cell_h;
+            assert_eq!(grid_dims_from(width, height, cell_w, cell_h), (cols, rows));
+        }
     }
 }

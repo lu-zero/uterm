@@ -24,7 +24,7 @@ emoji-fallback = ["term-atlas/emoji-fallback"]
 mimalloc = ["dep:mimalloc"]
 
 [dependencies]
-rio-vt = { version = "0.5", default-features = false, features = ["pty", "clipboard"] }
+rio-vt = { version = "0.5.32", default-features = false, features = ["pty", "clipboard"] }
 winit = { version = "=0.31.0-beta.4", default-features = false }
 softbuffer = { version = "0.4", default-features = false }
 fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
