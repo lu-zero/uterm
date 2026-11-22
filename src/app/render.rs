@@ -194,7 +194,6 @@ impl AppState {
                 self.atlas.ensure(cell.ch, cell.cells)
             }
         }));
-
         let mut buffer = match self.surface.buffer_mut() {
             Ok(b) => b,
             Err(_) => {

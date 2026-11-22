@@ -33,5 +33,5 @@ fontique = { version = "0.12", default-features = false, features = ["std", "sys
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 winnow-args = "0.6"
-term-atlas = { version = "0.1.5", default-features = false }
+term-atlas = { version = "0.1.6", default-features = false }
 mimalloc = { version = "0.1.52", optional = true }
