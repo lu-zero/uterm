@@ -172,8 +172,7 @@ impl AppState {
         }
         let key_help: Vec<(&str, &str)> = if self.key_help {
             crate::keybindings::bindings()
-                .into_iter()
-                .map(|binding| (binding.keys, binding.action))
+                .map(|binding| (binding.label, binding.description))
                 .collect()
         } else {
             Vec::new()

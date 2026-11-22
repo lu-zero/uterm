@@ -1,6 +1,6 @@
 use crate::app::input::key_to_bytes;
 use crate::app::{AppState, LocalPointerState, SystemClipboard, OVERLAY_TIMEOUT};
-use crate::cli::{is_command_modifier, StartupGeometry};
+use crate::cli::StartupGeometry;
 use crate::error::Error;
 use crate::event::Listener;
 use crate::event::UiEvent;
@@ -16,7 +16,6 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
-use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId as WinitWindowId};
 
 pub(crate) struct Uterm {
@@ -243,89 +242,17 @@ impl ApplicationHandler<UiEvent> for Uterm {
                     return;
                 }
                 let mods = st.modifiers.state();
-                let ctrl = mods.control_key();
-                let shift = mods.shift_key();
-                let alt = mods.alt_key();
-                let cmd = is_command_modifier(mods);
-
-                // Copy / paste / new-window: Command on macOS, Ctrl+Shift elsewhere.
-                if cmd {
-                    if let Key::Character(s) = &k.logical_key {
-                        let c = s.to_lowercase();
-                        if c == "c" {
-                            st.copy_selection();
-                            return;
-                        } else if c == "v" {
-                            st.paste_clipboard();
-                            return;
-                        } else if c == "n" && !k.repeat {
-                            st.spawn_new_window();
-                            return;
-                        }
-                    }
-                }
-
-                if ctrl && shift {
-                    if let Key::Character(s) = &k.logical_key {
-                        let c = s.to_lowercase();
-                        if c == "t" {
-                            if let Err(err) = st.new_tab() {
-                                self.fail(event_loop, err);
-                                return;
-                            }
-                            st.window.request_redraw();
-                            return;
-                        } else if c == "w" {
-                            st.close_active_tab(event_loop);
-                            st.window.request_redraw();
-                            return;
-                        } else if c == "=" || c == "+" {
-                            if let Err(err) = st.apply_preset(1) {
-                                self.fail(event_loop, err);
-                                return;
-                            }
-                            st.window.request_redraw();
-                            return;
-                        } else if c == "-" || c == "_" {
-                            if let Err(err) = st.apply_preset(-1) {
-                                self.fail(event_loop, err);
-                                return;
-                            }
-                            st.window.request_redraw();
-                            return;
-                        } else if c == "h" {
-                            st.toggle_key_help();
-                            st.window.request_redraw();
-                            return;
-                        }
-                    }
-                    if matches!(k.logical_key, Key::Named(NamedKey::Tab)) {
-                        st.prev_tab();
-                        st.window.request_redraw();
+                if let Some(action) = crate::keybindings::lookup_key(mods, &k.logical_key) {
+                    // A held new-window shortcut must not spawn a process per repeat.
+                    if action == crate::keybindings::Action::NewWindow && k.repeat {
                         return;
                     }
-                }
-                if alt && matches!(k.logical_key, Key::Named(NamedKey::Enter)) {
-                    st.lock_toggle();
+                    if let Err(err) = st.apply_action(action, event_loop) {
+                        self.fail(event_loop, err);
+                        return;
+                    }
                     st.window.request_redraw();
                     return;
-                }
-                if ctrl {
-                    if matches!(k.logical_key, Key::Named(NamedKey::Tab)) && !shift {
-                        st.next_tab();
-                        st.window.request_redraw();
-                        return;
-                    }
-                    if matches!(k.logical_key, Key::Named(NamedKey::PageDown)) {
-                        st.next_tab();
-                        st.window.request_redraw();
-                        return;
-                    }
-                    if matches!(k.logical_key, Key::Named(NamedKey::PageUp)) {
-                        st.prev_tab();
-                        st.window.request_redraw();
-                        return;
-                    }
                 }
 
                 let app_cursor = st

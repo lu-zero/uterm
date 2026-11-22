@@ -125,10 +125,10 @@ impl AppState {
         }
         if state == ElementState::Pressed && button == MouseButton::Left {
             if let Some((idx, close)) = self.tab_bar_hit(x, y) {
-                if close {
-                    self.close_tab_at(idx, event_loop);
-                } else {
-                    self.select_tab(idx);
+                match crate::keybindings::mouse_action(close) {
+                    crate::keybindings::Action::CloseTabAt => self.close_tab_at(idx, event_loop),
+                    crate::keybindings::Action::SelectTab => self.select_tab(idx),
+                    _ => unreachable!("mouse bindings resolve to tab actions"),
                 }
                 self.local_pointer = LocalPointerState::Idle;
                 self.window.request_redraw();

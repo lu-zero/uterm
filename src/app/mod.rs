@@ -7,6 +7,7 @@ pub(crate) mod tabs;
 use crate::cli::PRESET_SIZES;
 use crate::error::Error;
 use crate::event::UiEvent;
+use crate::keybindings::Action;
 use crate::terminal::{cells_to_px, Tab};
 use rio_vt::clipboard::{Clipboard, ClipboardType};
 use rio_vt::crosswords::grid::row::Row;
@@ -175,6 +176,53 @@ impl AppState {
 
     pub(crate) fn toggle_key_help(&mut self) {
         self.key_help = !self.key_help;
+    }
+
+    /// Run the action selected by the binding map.
+    pub(crate) fn apply_action(
+        &mut self,
+        action: Action,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<(), Error> {
+        match action {
+            Action::NewTab => self.new_tab(),
+            Action::CloseActiveTab => {
+                self.close_active_tab(event_loop);
+                Ok(())
+            }
+            Action::NextTab => {
+                self.next_tab();
+                Ok(())
+            }
+            Action::PrevTab => {
+                self.prev_tab();
+                Ok(())
+            }
+            Action::Copy => {
+                self.copy_selection();
+                Ok(())
+            }
+            Action::Paste => {
+                self.paste_clipboard();
+                Ok(())
+            }
+            Action::NewWindow => {
+                self.spawn_new_window();
+                Ok(())
+            }
+            Action::PresetNext => self.apply_preset(1),
+            Action::PresetPrev => self.apply_preset(-1),
+            Action::LockResize => {
+                self.lock_toggle();
+                Ok(())
+            }
+            Action::ToggleHelp => {
+                self.toggle_key_help();
+                Ok(())
+            }
+            // Pointer clicks are resolved with their tab index in input.rs.
+            Action::SelectTab | Action::CloseTabAt => Ok(()),
+        }
     }
 
     pub(crate) fn lock_toggle(&mut self) {
