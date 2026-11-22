@@ -103,3 +103,20 @@ Behavior oracle: screenshots of both builds rendering the same text, cropped
 to the terminal content, were pixel-identical (ImageMagick `AE = 0`). Tests
 pass with default and `lean` features. The win in the shared crates is fewer
 allocations in miss paths, not uterm frame time — as predicted by the A/B.
+
+## Where the frame time goes
+
+A 5-second `sample` of a live 10 Hz session put 209 of 210 samples inside
+`AppState::render` in `softbuffer::Buffer::present` → CoreAnimation commit →
+CoreGraphics/vImage colour conversion. A temporary `UTERM_SKIP_PRESENT` hook
+(since removed) confirmed the mechanism with paired A/B on the same binary:
+
+| host | CPU ratio (skip/present) | 95% CI | rounds |
+| --- | --- | --- | --- |
+| macOS | 0.596 | 0.531–0.712 | 8 |
+| Linux (thalia, waypipe) | 0.569 | 0.463–0.605 | 6 |
+
+So about 40–43% of the CPU is the framebuffer presentation path, not glyph
+rasterization, blitting, or terminal state work. Wall time is unchanged because
+the status line sleeps between updates. RSS numbers from the Linux run are not
+meaningful: they include the waypipe/ssh process tree.
