@@ -278,7 +278,8 @@ pub(crate) fn blit_atlas(
     y0: usize,
     color: u32,
 ) {
-    let stride = term_atlas::ATLAS_SIZE as usize;
+    let gray_stride = term_atlas::ATLAS_SIZE as usize;
+    let color_stride = term_atlas::COLOR_ATLAS_SIZE as usize;
     let gray = atlas.pixels();
     let color_pixels = atlas.color_pixels();
     for y in 0..rect.h as usize {
@@ -297,8 +298,8 @@ pub(crate) fn blit_atlas(
             let Some(dst) = buf.get_mut(idx) else {
                 continue;
             };
-            let src_idx = (rect.y as usize + y) * stride + rect.x as usize + x;
             if rect.atlas == 0 {
+                let src_idx = (rect.y as usize + y) * gray_stride + rect.x as usize + x;
                 let Some(&alpha) = gray.get(src_idx) else {
                     continue;
                 };
@@ -306,6 +307,7 @@ pub(crate) fn blit_atlas(
                     *dst = blend(*dst, color, alpha as u32, (255 - alpha) as u32);
                 }
             } else if let Some(pixels) = color_pixels {
+                let src_idx = (rect.y as usize + y) * color_stride + rect.x as usize + x;
                 let offset = src_idx * 4;
                 let Some(bytes) = pixels.get(offset..offset + 4) else {
                     continue;

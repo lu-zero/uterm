@@ -24,6 +24,9 @@ impl AppState {
         if self.tabs.is_empty() {
             return;
         }
+        if self.atlas.needs_reset() {
+            self.atlas.reclaim();
+        }
         self.clamp_active();
         let size = self.window.inner_size();
         let (width, height) = (size.width, size.height);
