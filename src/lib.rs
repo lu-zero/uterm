@@ -8,6 +8,7 @@ mod error;
 mod event;
 mod fonts;
 mod handler;
+mod keybindings;
 mod terminal;
 
 use crate::cli::{RunOptions, Startup};

@@ -29,7 +29,8 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - **Ctrl+Shift+Tab** / **Ctrl+PageUp**: previous tab
 - **Cmd+C / Cmd+V / Cmd+N** on macOS (Ctrl+Shift+C/V/N on other platforms): copy selection, paste clipboard, spawn a new window (independent process/PTY, same size)
 - **Ctrl+Shift+=** / **Ctrl+Shift+-**: cycle through pre-defined window sizes (clears the resize lock)
-- **Alt+Enter**: toggle window-size lock (while locked, `WindowEvent::Resized` no longer resizes the terminal grid)
+- **Alt+Enter**: toggle window-size lock (the window and the terminal grid are both locked)
+- **Ctrl+Shift+H**: show/hide the keyboard-shortcut overlay
 - **Mouse click on tab**: switch tab
 - **Mouse click on tab close (×)**: close tab
 

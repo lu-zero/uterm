@@ -98,6 +98,8 @@ pub(crate) struct AppState {
     pub(crate) geometry_locked: bool,
     /// (timestamp, text) of the transient "cols x rows" overlay shown after a resize.
     pub(crate) resize_overlay: Option<(Instant, String)>,
+    /// Whether the keyboard-shortcut help overlay is visible.
+    pub(crate) key_help: bool,
     pub(crate) preset_index: usize,
 }
 
@@ -150,6 +152,7 @@ impl AppState {
             clipboard,
             geometry_locked: false,
             resize_overlay: None,
+            key_help: false,
             preset_index: 0,
         };
         st.sync_font_metrics(st.window.scale_factor())?;
@@ -168,6 +171,10 @@ impl AppState {
         // Lock the window as well as the grid; otherwise dragging the window
         // still fires Resized events and changes the terminal behind the lock.
         self.window.set_resizable(!locked);
+    }
+
+    pub(crate) fn toggle_key_help(&mut self) {
+        self.key_help = !self.key_help;
     }
 
     pub(crate) fn lock_toggle(&mut self) {

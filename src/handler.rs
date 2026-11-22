@@ -293,6 +293,10 @@ impl ApplicationHandler<UiEvent> for Uterm {
                             }
                             st.window.request_redraw();
                             return;
+                        } else if c == "h" {
+                            st.toggle_key_help();
+                            st.window.request_redraw();
+                            return;
                         }
                     }
                     if matches!(k.logical_key, Key::Named(NamedKey::Tab)) {

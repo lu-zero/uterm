@@ -32,13 +32,8 @@ pub(crate) enum Startup {
 }
 
 /// A tiny terminal.
-///
-/// `Ctrl+Shift+T/W`  *new/close tab*
-/// `Ctrl+Shift+C/V`  *copy/paste*
-/// `Ctrl+Shift+N`    *new window*
-/// `Alt+Enter`       *toggle resize lock*
 #[derive(Args, Debug)]
-#[arg(name = "uterm", verbatim_doc_comment)]
+#[arg(name = "uterm", after_help = crate::keybindings::HELP)]
 struct Cli {
     /// Terminal size in cells, e.g. `128x40`.
     #[arg(long, value_name = "WxH", parse_with = geometry_value)]

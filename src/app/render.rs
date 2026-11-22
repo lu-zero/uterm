@@ -170,6 +170,19 @@ impl AppState {
                 need(ch, 1);
             }
         }
+        let key_help: Vec<(String, String)> = if self.key_help {
+            crate::keybindings::bindings()
+                .into_iter()
+                .map(|binding| (binding.keys, binding.action))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for (keys, action) in &key_help {
+            for ch in keys.chars().chain(action.chars()) {
+                need(ch, 1);
+            }
+        }
         drop(need);
         let mut cell_rects = std::mem::take(&mut self.cell_rects);
         cell_rects.clear();
@@ -455,6 +468,81 @@ impl AppState {
                     );
                 }
                 cx += self.cell_w;
+            }
+        }
+
+        if !key_help.is_empty() {
+            let keys_w = key_help
+                .iter()
+                .map(|(keys, _)| keys.chars().count())
+                .max()
+                .unwrap_or(0);
+            let action_w = key_help
+                .iter()
+                .map(|(_, action)| action.chars().count())
+                .max()
+                .unwrap_or(0);
+            let box_w = ((keys_w + 2 + action_w + 4) * self.cell_w).min(bw.saturating_sub(4));
+            let box_h = ((key_help.len() + 3) * self.cell_h).min(bh.saturating_sub(bar_h + 4));
+            let x0 = bw.saturating_sub(box_w) / 2;
+            let y0 = bar_h + (bh.saturating_sub(bar_h + box_h)) / 2;
+            fill_rect(
+                &mut buffer,
+                bw,
+                bh,
+                x0,
+                y0,
+                box_w,
+                box_h,
+                rgb_u32(0x14, 0x18, 0x1f),
+            );
+            fill_rect(
+                &mut buffer,
+                bw,
+                bh,
+                x0,
+                y0,
+                box_w,
+                1,
+                rgb_u32(0x6b, 0xb6, 0xff),
+            );
+            for (row, (keys, action)) in key_help.iter().enumerate() {
+                let ty = y0 + 2 + row * self.cell_h;
+                if ty + self.cell_h > y0 + box_h {
+                    break;
+                }
+                let mut cx = x0 + 2;
+                for ch in keys.chars() {
+                    if let Some(&rect) = glyphs.get(&(ch, 1)) {
+                        blit_atlas(
+                            &mut buffer,
+                            bw,
+                            bh,
+                            &self.atlas,
+                            rect,
+                            cx,
+                            ty,
+                            rgb_u32(0x8b, 0xc5, 0xff),
+                        );
+                    }
+                    cx += self.cell_w;
+                }
+                cx = x0 + 2 + (keys_w + 2) * self.cell_w;
+                for ch in action.chars() {
+                    if let Some(&rect) = glyphs.get(&(ch, 1)) {
+                        blit_atlas(
+                            &mut buffer,
+                            bw,
+                            bh,
+                            &self.atlas,
+                            rect,
+                            cx,
+                            ty,
+                            rgb_u32(0xe6, 0xed, 0xf5),
+                        );
+                    }
+                    cx += self.cell_w;
+                }
             }
         }
 
