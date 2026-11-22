@@ -259,11 +259,8 @@ impl AppState {
         }
     }
 
-    pub(crate) fn paste_from(&mut self, ty: ClipboardType) {
-        let mut text = self.clipboard.get(ty);
-        if text.is_empty() && matches!(ty, ClipboardType::Selection) {
-            text = self.clipboard.get(ClipboardType::Clipboard);
-        }
+    /// Insert text as if pasted, using bracketed paste when the app asked for it.
+    pub(crate) fn paste_text(&mut self, text: String) {
         if text.is_empty() {
             return;
         }
@@ -283,6 +280,14 @@ impl AppState {
             .pty
             .channel
             .send(Msg::Input(Cow::Owned(payload.into_bytes())));
+    }
+
+    pub(crate) fn paste_from(&mut self, ty: ClipboardType) {
+        let mut text = self.clipboard.get(ty);
+        if text.is_empty() && matches!(ty, ClipboardType::Selection) {
+            text = self.clipboard.get(ClipboardType::Clipboard);
+        }
+        self.paste_text(text);
     }
 
     pub(crate) fn paste_clipboard(&mut self) {

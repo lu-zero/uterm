@@ -183,6 +183,10 @@ impl ApplicationHandler<UiEvent> for Uterm {
             WindowEvent::ModifiersChanged(m) => {
                 st.modifiers = m;
             }
+            WindowEvent::DroppedFile(path) => {
+                // Insert the path as text, never open or execute it.
+                st.paste_text(path.to_string_lossy().into_owned());
+            }
             WindowEvent::Focused(false) => {
                 // No release event arrives after the focus loss.
                 st.mouse_buttons = [false; 3];
