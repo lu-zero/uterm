@@ -41,3 +41,27 @@ For each path note whether the process exits cleanly or aborts (for example
 `Segmentation fault`, or a `wl_display` assertion). The relevant code is
 `SystemClipboard` in `src/app/mod.rs`, which must drop the clipboard before its
 owned display handle. Close #9 only when all three paths are clean.
+
+### Setup used for a first attempt
+
+- macOS: `cocoa-way` (from `brew tap J-x-Z/tap && brew install cocoa-way
+  waypipe-darwin`). Start `cocoa-way`; it creates a `wayland-1` socket under an
+  `XDG_RUNTIME_DIR` such as `/var/folders/.../T/cocoa-way`.
+- Linux host: install `waypipe[lz4]` and `dev-libs/wayland` — winit needs
+  `libwayland-client.so` at runtime — then build uterm there with
+  `cargo build --release`.
+- Forward with an explicit display path, since the remote SSH session has no
+  `XDG_RUNTIME_DIR`, and pass an executable rather than a shell command:
+
+  ```bash
+  export XDG_RUNTIME_DIR=/path/to/cocoa-way
+  export WAYLAND_DISPLAY=wayland-1
+  waypipe --display /tmp/uterm-wayland-0 ssh -o StreamLocalBindUnlink=yes \
+    thalia /path/to/uterm -- /bin/sh
+  ```
+
+**Result so far:** the "last shell exits" path was clean (uterm exit status 0,
+empty log) with the app's shell replaced by `/bin/true`. The close button and
+Ctrl+Shift+W could not be injected from macOS — System Events synthetic events
+did not reach the Wayland client — so those two paths still need a real
+Wayland session.
