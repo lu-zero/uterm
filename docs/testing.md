@@ -87,3 +87,19 @@ Review of term-atlas 0.1.4 / term-font 0.1.1 by the rune-term side:
   `regular_coords` Vec as `Atlas` fields, and add a `(family, char)` discovery
   cache in term-font. A four-pane headless rune-term benchmark likewise found
   no frame-time benefit from allocator tuning: repaint/upload dominates.
+
+### Validation of term-atlas 0.1.5 / term-font 0.1.2
+
+All three shared-crate fixes are in 0.1.5/0.1.2. uterm validation with a
+finishing 10 Hz status-line workload (50 updates, 10 paired alternating rounds,
+`scripts/ab.py`):
+
+| metric | 0.1.4 | 0.1.5 | ratio (95% CI) |
+| --- | --- | --- | --- |
+| wall | 5.761 s | 5.759 s | 1.0008 [0.9943, 1.0069] — unresolved |
+| CPU | 0.9452 s | 0.9453 s | 0.9969 [0.9898, 1.0211] — unresolved |
+
+Behavior oracle: screenshots of both builds rendering the same text, cropped
+to the terminal content, were pixel-identical (ImageMagick `AE = 0`). Tests
+pass with default and `lean` features. The win in the shared crates is fewer
+allocations in miss paths, not uterm frame time — as predicted by the A/B.
