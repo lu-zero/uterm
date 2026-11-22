@@ -1,22 +1,26 @@
 use super::AppState;
 use crate::draw::{
-    blit_atlas, fill_rect, fill_rect_alpha, resolve_ansi_color, resolve_named, rgb_u32,
+    blend, blit_atlas, blit_atlas_sheared, fill_rect, fill_rect_alpha, resolve_ansi_color,
+    resolve_named, rgb_u32,
 };
 use rio_vt::ansi::CursorShape;
 use rio_vt::config::colors::NamedColor;
 use rio_vt::crosswords::grid::Dimensions;
 use rio_vt::crosswords::pos::{Column, Line, Pos};
 use rio_vt::crosswords::square::Wide;
+use rio_vt::crosswords::style::StyleFlags;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use term_atlas::GlyphRect;
 
 struct CellRender {
-    ch: char,
+    /// Base code point plus combining marks / variation selectors.
+    text: String,
     fg: u32,
     bg: u32,
     /// 1 for a normal glyph, 2 for a wide glyph's leading cell, 0 for a spacer.
     cells: u8,
+    flags: StyleFlags,
 }
 
 impl AppState {
@@ -76,14 +80,15 @@ impl AppState {
             if let Some(n) = nrows.checked_mul(ncols) {
                 let _ = cells.try_reserve(n);
             }
-            for row in &rows_vec {
+            for (r, row) in rows_vec.iter().enumerate() {
                 for col in 0..ncols {
                     let Some(square) = row.inner.get(col) else {
                         cells.push(CellRender {
-                            ch: '\0',
+                            text: String::new(),
                             fg: default_fg,
                             bg: default_bg,
                             cells: 1,
+                            flags: StyleFlags::empty(),
                         });
                         continue;
                     };
@@ -101,11 +106,19 @@ impl AppState {
                         Wide::Spacer | Wide::LeadingSpacer => 0,
                         Wide::Narrow => 1,
                     };
+                    let text: String = term
+                        .grid
+                        .cell_text(Pos::new(
+                            Line(r as i32 - display_offset as i32),
+                            Column(col),
+                        ))
+                        .collect();
                     cells.push(CellRender {
-                        ch: square.c(),
+                        text,
                         fg,
                         bg,
                         cells: cells_wide,
+                        flags: style.flags,
                     });
                 }
             }
@@ -145,12 +158,17 @@ impl AppState {
                 need(ch, 1);
             }
         }
-        for cell in &cells {
-            if cell.cells > 0 && cell.ch != '\0' && cell.ch != ' ' {
-                need(cell.ch, cell.cells);
-            }
-        }
         drop(need);
+        let cell_rects: Vec<Option<GlyphRect>> = cells
+            .iter()
+            .map(|cell| {
+                if cell.cells > 0 && !cell.text.is_empty() && cell.text != " " {
+                    self.atlas.ensure_str(&cell.text, cell.cells)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         let mut buffer = match self.surface.buffer_mut() {
             Ok(b) => b,
@@ -302,10 +320,54 @@ impl AppState {
                 let selected = selection.is_some_and(|sel| {
                     sel.contains(Pos::new(Line(r as i32 - display_offset as i32), Column(c)))
                 });
-                let fg = if selected { cell.bg } else { cell.fg };
-                if cell.cells > 0 && cell.ch != '\0' && cell.ch != ' ' {
-                    if let Some(&rect) = glyphs.get(&(cell.ch, cell.cells)) {
-                        blit_atlas(&mut buffer, bw, bh, &self.atlas, rect, px, py, fg);
+                let mut fg = if selected { cell.bg } else { cell.fg };
+                if cell.flags.contains(StyleFlags::DIM) {
+                    fg = blend(cell.bg, fg, 128, 127);
+                }
+                let width = self.cell_w * cell.cells.max(1) as usize;
+                if !cell.flags.contains(StyleFlags::HIDDEN) {
+                    if let Some(Some(rect)) = cell_rects.get(idx) {
+                        if cell.flags.contains(StyleFlags::BOLD) && self.cell_w > 1 {
+                            blit_atlas(&mut buffer, bw, bh, &self.atlas, *rect, px, py, fg);
+                            blit_atlas(&mut buffer, bw, bh, &self.atlas, *rect, px + 1, py, fg);
+                        } else if cell.flags.contains(StyleFlags::ITALIC) {
+                            blit_atlas_sheared(
+                                &mut buffer,
+                                bw,
+                                bh,
+                                &self.atlas,
+                                *rect,
+                                px,
+                                py,
+                                fg,
+                                -0.25,
+                            );
+                        } else {
+                            blit_atlas(&mut buffer, bw, bh, &self.atlas, *rect, px, py, fg);
+                        }
+                    }
+                    if cell.flags.contains(StyleFlags::STRIKEOUT) {
+                        fill_rect(&mut buffer, bw, bh, px, py + self.cell_h / 2, width, 1, fg);
+                    }
+                    let uy = py + self.cell_h.saturating_sub(2);
+                    if cell.flags.contains(StyleFlags::UNDERLINE) {
+                        fill_rect(&mut buffer, bw, bh, px, uy, width, 1, fg);
+                    } else if cell.flags.contains(StyleFlags::DOUBLE_UNDERLINE) {
+                        fill_rect(&mut buffer, bw, bh, px, uy.saturating_sub(2), width, 1, fg);
+                        fill_rect(&mut buffer, bw, bh, px, uy, width, 1, fg);
+                    } else if cell.flags.contains(StyleFlags::UNDERCURL) {
+                        for x in 0..width {
+                            let y = uy - usize::from(x % 4 == 1 || x % 4 == 2);
+                            fill_rect(&mut buffer, bw, bh, px + x, y, 1, 1, fg);
+                        }
+                    } else if cell.flags.contains(StyleFlags::DOTTED_UNDERLINE) {
+                        for x in (0..width).step_by(2) {
+                            fill_rect(&mut buffer, bw, bh, px + x, uy, 1, 1, fg);
+                        }
+                    } else if cell.flags.contains(StyleFlags::DASHED_UNDERLINE) {
+                        for x in (0..width).step_by(4) {
+                            fill_rect(&mut buffer, bw, bh, px + x, uy, 2.min(width - x), 1, fg);
+                        }
                     }
                 }
 
@@ -483,6 +545,13 @@ mod tests {
             framebuffer.iter().any(|&pixel| pixel != 0),
             "emoji produced no pixels"
         );
+    }
+
+    #[test]
+    fn flag_cluster_is_rasterized() {
+        let mut atlas = atlas();
+        let rect = atlas.ensure_str("🇺🇸", 2).expect("flag cluster");
+        assert!(rect.w > 0 && rect.h > 0);
     }
 
     #[test]

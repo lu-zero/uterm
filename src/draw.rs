@@ -278,6 +278,34 @@ pub(crate) fn blit_atlas(
     y0: usize,
     color: u32,
 ) {
+    blit_atlas_impl(buf, bw, bh, atlas, rect, x0, y0, color, 0.0);
+}
+
+pub(crate) fn blit_atlas_sheared(
+    buf: &mut [u32],
+    bw: usize,
+    bh: usize,
+    atlas: &term_atlas::Atlas,
+    rect: term_atlas::GlyphRect,
+    x0: usize,
+    y0: usize,
+    color: u32,
+    shear: f32,
+) {
+    blit_atlas_impl(buf, bw, bh, atlas, rect, x0, y0, color, shear);
+}
+
+fn blit_atlas_impl(
+    buf: &mut [u32],
+    bw: usize,
+    bh: usize,
+    atlas: &term_atlas::Atlas,
+    rect: term_atlas::GlyphRect,
+    x0: usize,
+    y0: usize,
+    color: u32,
+    shear: f32,
+) {
     let gray_stride = term_atlas::ATLAS_SIZE as usize;
     let color_stride = term_atlas::COLOR_ATLAS_SIZE as usize;
     let gray = atlas.pixels();
@@ -287,12 +315,13 @@ pub(crate) fn blit_atlas(
         if py >= bh {
             continue;
         }
+        let shift = (y as f32 * shear).round() as i32;
         for x in 0..rect.w as usize {
-            let px = x0 + x;
-            if px >= bw {
+            let px = x0 as i32 + x as i32 + shift;
+            if px < 0 || px >= bw as i32 {
                 continue;
             }
-            let Some(idx) = pixel_index(bw, px, py) else {
+            let Some(idx) = pixel_index(bw, px as usize, py) else {
                 continue;
             };
             let Some(dst) = buf.get_mut(idx) else {

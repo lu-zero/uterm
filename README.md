@@ -75,7 +75,7 @@ On Linux the `clipboard`, `x11` and `wayland` features are enabled by default (f
 
 Terminal route IDs are `Tab.id` values and are used for tab-exit routing (`UiEvent::TabExited(id)`). This is a small embedded-terminal app, so integer IDs are sufficient.
 
-- Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
+- Renders cell fg/bg colors, inverse, dim, bold, italic (sheared), underline (single/double/curly/dotted/dashed), strikethrough and hidden; blink is intentionally not animated, and cursor shapes beyond the basics are not styled per cell
 - Wide characters occupy two cells in the grid and are drawn as one cell sprite covering both cells
 - Basic local selection copy/paste and OSC 52 clipboard handling; no IME, xterm/kitty keyboard protocol, or clipboard popup on paste (plain `Ctrl+V` into terminal)
 - No scrollback UI and no rendered graphics protocols
