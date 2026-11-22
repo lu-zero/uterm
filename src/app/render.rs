@@ -474,6 +474,18 @@ mod tests {
     }
 
     #[test]
+    fn emoji_glyph_blits_into_the_framebuffer() {
+        let mut atlas = atlas();
+        let rect = atlas.ensure('😀', 2).expect("emoji fallback");
+        let mut framebuffer = vec![0u32; 40 * 18];
+        crate::draw::blit_atlas(&mut framebuffer, 40, 18, &atlas, rect, 0, 0, 0x00ffffff);
+        assert!(
+            framebuffer.iter().any(|&pixel| pixel != 0),
+            "emoji produced no pixels"
+        );
+    }
+
+    #[test]
     fn wide_glyph_occupies_two_cells() {
         let mut atlas = atlas();
         let rect = atlas.ensure('日', 2).expect("wide glyph");
