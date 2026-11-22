@@ -14,8 +14,9 @@ use std::num::NonZeroU32;
 use term_atlas::GlyphRect;
 
 struct CellRender {
-    /// Base code point plus combining marks / variation selectors.
-    text: String,
+    ch: char,
+    /// Base code point plus combining marks / variation selectors, only when present.
+    cluster: Option<String>,
     fg: u32,
     bg: u32,
     /// 1 for a normal glyph, 2 for a wide glyph's leading cell, 0 for a spacer.
@@ -84,7 +85,8 @@ impl AppState {
                 for col in 0..ncols {
                     let Some(square) = row.inner.get(col) else {
                         cells.push(CellRender {
-                            text: String::new(),
+                            ch: '\0',
+                            cluster: None,
                             fg: default_fg,
                             bg: default_bg,
                             cells: 1,
@@ -106,15 +108,23 @@ impl AppState {
                         Wide::Spacer | Wide::LeadingSpacer => 0,
                         Wide::Narrow => 1,
                     };
-                    let text: String = term
-                        .grid
-                        .cell_text(Pos::new(
-                            Line(r as i32 - display_offset as i32),
-                            Column(col),
-                        ))
-                        .collect();
+                    // Only allocate a cluster string when the cell actually
+                    // has zero-width extras to composite.
+                    let cluster = if square.extras_id_checked().is_some() {
+                        Some(
+                            term.grid
+                                .cell_text(Pos::new(
+                                    Line(r as i32 - display_offset as i32),
+                                    Column(col),
+                                ))
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
                     cells.push(CellRender {
-                        text,
+                        ch: square.c(),
+                        cluster,
                         fg,
                         bg,
                         cells: cells_wide,
@@ -162,10 +172,12 @@ impl AppState {
         let cell_rects: Vec<Option<GlyphRect>> = cells
             .iter()
             .map(|cell| {
-                if cell.cells > 0 && !cell.text.is_empty() && cell.text != " " {
-                    self.atlas.ensure_str(&cell.text, cell.cells)
-                } else {
+                if cell.cells == 0 || cell.ch == '\0' || cell.ch == ' ' {
                     None
+                } else if let Some(text) = &cell.cluster {
+                    self.atlas.ensure_str(text, cell.cells)
+                } else {
+                    self.atlas.ensure(cell.ch, cell.cells)
                 }
             })
             .collect();

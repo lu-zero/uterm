@@ -23,6 +23,12 @@ reference numbers (urxvt ~0.7%, GTK terminals 10–16%, the old framebuffer
 build ~7%). Only optimize what shows up in the sample — the old 7% figure is
 not a baseline for the current tree.
 
+A first local run on macOS (release build, sampled via deltas of `ps -o time=`)
+gave a median of 16.7% CPU. Building a cluster `String` for every cell every
+frame accounted for part of that: avoiding the allocation for cells without
+zero-width extras brought the median to 12.9%. These are macOS numbers; the
+Linux baseline is still needed.
+
 ## Wayland exit paths (#9)
 
 On a real Wayland session, run uterm and exercise all three exits:
