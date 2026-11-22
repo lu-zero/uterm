@@ -113,7 +113,7 @@ impl AppState {
         &mut self,
         button: MouseButton,
         state: ElementState,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
     ) {
         let (x, y) = self.cursor_pos;
         if std::env::var_os("UTERM_MOUSE_DEBUG").is_some() {
@@ -394,7 +394,9 @@ pub(crate) fn key_to_bytes(
             if let Some(ch) = s.chars().next() {
                 if let Some(b) = ctrl_char(ch) {
                     let mut out = vec![b];
-                    if alt {
+                    // Ctrl+Space is NUL. In winit 0.31 space is a Character,
+                    // so keep the old Ctrl+Alt+Space behaviour of sending just NUL.
+                    if alt && ch != ' ' {
                         out.insert(0, 0x1b);
                     }
                     return Some(out);
@@ -438,17 +440,8 @@ pub(crate) fn key_to_bytes(
         Key::Named(NamedKey::Backspace) => Some(if ctrl { vec![0x08] } else { vec![0x7f] }),
         Key::Named(NamedKey::Tab) => Some(b"\t".to_vec()),
         Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
-        Key::Named(NamedKey::Space) => {
-            if ctrl {
-                Some(vec![0])
-            } else if alt {
-                Some(b"\x1b ".to_vec())
-            } else if let Some(text) = &k.text {
-                Some(text.as_bytes().to_vec())
-            } else {
-                Some(b" ".to_vec())
-            }
-        }
+        // Space is `Key::Character(" ")` since winit 0.31; the generic
+        // `Character` arm above produces the same bytes as the old branch.
         Key::Named(
             named @ (NamedKey::ArrowUp
             | NamedKey::ArrowDown

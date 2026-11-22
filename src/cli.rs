@@ -94,7 +94,7 @@ pub(crate) fn parse_geometry(s: &str) -> Result<(usize, usize), Error> {
 pub(crate) fn is_command_modifier(mods: winit::keyboard::ModifiersState) -> bool {
     #[cfg(target_os = "macos")]
     {
-        mods.super_key()
+        mods.meta_key()
     }
     #[cfg(not(target_os = "macos"))]
     {

@@ -1,6 +1,5 @@
 use super::{AppState, LocalPointerState};
 use crate::error::Error;
-use crate::event::Listener;
 use crate::terminal::Tab;
 use winit::event_loop::ActiveEventLoop;
 
@@ -20,7 +19,7 @@ impl AppState {
         }
     }
 
-    pub(crate) fn remove_tab_index(&mut self, idx: usize, event_loop: &ActiveEventLoop) {
+    pub(crate) fn remove_tab_index(&mut self, idx: usize, event_loop: &dyn ActiveEventLoop) {
         if idx >= self.tabs.len() {
             return;
         }
@@ -44,9 +43,7 @@ impl AppState {
 
     pub(crate) fn new_tab(&mut self) -> Result<(), Error> {
         let (cols, rows) = self.grid_dims();
-        let listener = Listener {
-            proxy: self.proxy.clone(),
-        };
+        let listener = self.listener.clone();
         let id = self.next_tab_id;
         let tab = Tab::new(
             id,
@@ -76,7 +73,7 @@ impl AppState {
         }
     }
 
-    pub(crate) fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn close_active_tab(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.tabs.is_empty() {
             return;
         }
@@ -85,13 +82,13 @@ impl AppState {
         self.remove_tab_index(idx, event_loop);
     }
 
-    pub(crate) fn close_tab_by_id(&mut self, id: usize, event_loop: &ActiveEventLoop) {
+    pub(crate) fn close_tab_by_id(&mut self, id: usize, event_loop: &dyn ActiveEventLoop) {
         if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
             self.remove_tab_index(idx, event_loop);
         }
     }
 
-    pub(crate) fn close_tab_at(&mut self, idx: usize, event_loop: &ActiveEventLoop) {
+    pub(crate) fn close_tab_at(&mut self, idx: usize, event_loop: &dyn ActiveEventLoop) {
         self.remove_tab_index(idx, event_loop);
     }
 

@@ -12,10 +12,13 @@ mod keybindings;
 mod terminal;
 
 use crate::cli::{RunOptions, Startup};
-use crate::event::UiEvent;
+use crate::event::{Listener, UiEvent};
 use crate::handler::Uterm;
+use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::{self, Write};
+use std::rc::Rc;
+use std::sync::mpsc;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 pub use crate::error::Error;
@@ -55,18 +58,28 @@ pub fn run() -> Result<(), Error> {
         font_size,
         command,
     } = config::load(config.as_deref(), profile.as_deref(), geometry, command)?;
-    let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
+    let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let proxy = event_loop.create_proxy();
-    let mut app = Uterm {
-        proxy,
+    let (sender, receiver) = mpsc::channel::<UiEvent>();
+    let listener = Listener {
+        sender,
+        proxy: event_loop.create_proxy(),
+    };
+    // `run_app` consumes the handler, so the first error is kept in a shared
+    // slot that we can read after the event loop returns.
+    let error = Rc::new(RefCell::new(None));
+    let app = Uterm {
+        listener,
+        receiver,
         state: None,
         geometry,
         face: Some(face),
         font_size,
         command,
-        error: None,
+        error: error.clone(),
+        pending_drop: None,
     };
-    event_loop.run_app(&mut app)?;
-    app.error.map_or(Ok(()), Err)
+    event_loop.run_app(app)?;
+    let result = error.borrow_mut().take().map_or(Ok(()), Err);
+    result
 }

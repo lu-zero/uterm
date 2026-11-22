@@ -33,7 +33,7 @@ impl AppState {
             self.atlas.reclaim();
         }
         self.clamp_active();
-        let size = self.window.inner_size();
+        let size = self.window.surface_size();
         let (width, height) = (size.width, size.height);
         if width == 0 || height == 0 {
             return;
@@ -601,7 +601,7 @@ impl AppState {
         if y < 0.0 || y >= bar_h {
             return None;
         }
-        let layouts = self.tab_layouts(self.window.inner_size().width as usize);
+        let layouts = self.tab_layouts(self.window.surface_size().width as usize);
         for (i, (_, x0, w, close_x0)) in layouts.iter().enumerate() {
             let start = *x0 as f64;
             let end = (*x0 + *w) as f64;

@@ -36,7 +36,7 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 
 ## Building and running
 
-Requires a Rust toolchain.
+Requires a Rust toolchain. This build uses `winit 0.31.0-beta.4`: 0.30 has no Wayland drag-and-drop support, so the beta is needed until 0.31 is stable.
 
 ```bash
 cargo run

@@ -10,38 +10,48 @@ use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
 use softbuffer::{Context, Surface};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc::Receiver;
 use term_atlas::Face;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
-use winit::window::{Window, WindowId as WinitWindowId};
+use winit::data_transfer::TypeHint;
+use winit::dpi::{LogicalSize, PhysicalSize, Size};
+use winit::event::{ButtonSource, ElementState, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, AsyncRequestSerial, ControlFlow, DndAction};
+use winit::window::{Window, WindowAttributes, WindowId as WinitWindowId};
 
 pub(crate) struct Uterm {
-    pub(crate) proxy: EventLoopProxy<UiEvent>,
+    pub(crate) listener: Listener,
+    pub(crate) receiver: Receiver<UiEvent>,
     pub(crate) state: Option<AppState>,
     pub(crate) geometry: Option<StartupGeometry>,
     pub(crate) face: Option<Face>,
     pub(crate) font_size: f32,
     pub(crate) command: Vec<String>,
-    pub(crate) error: Option<Error>,
+    /// Shared with `run` because `run_app` takes the handler by value.
+    pub(crate) error: Rc<RefCell<Option<Error>>>,
+    /// Serial of the in-flight drag-and-drop data request, if any.
+    pub(crate) pending_drop: Option<AsyncRequestSerial>,
 }
 
 impl Uterm {
-    fn fail(&mut self, event_loop: &ActiveEventLoop, err: Error) {
-        if self.error.is_none() {
-            self.error = Some(err);
+    fn fail(&mut self, event_loop: &dyn ActiveEventLoop, err: Error) {
+        {
+            let mut error = self.error.borrow_mut();
+            if error.is_none() {
+                *error = Some(err);
+            }
         }
         event_loop.exit();
     }
 
-    fn start(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Error> {
-        let window = Rc::new(
+    fn start(&mut self, event_loop: &dyn ActiveEventLoop) -> Result<(), Error> {
+        let window: Rc<dyn Window> = Rc::from(
             event_loop.create_window(
-                Window::default_attributes()
+                WindowAttributes::default()
                     .with_title("uterm")
-                    .with_inner_size(LogicalSize::new(900.0, 620.0)),
+                    .with_surface_size(LogicalSize::new(900.0, 620.0)),
             )?,
         );
         let context = Context::new(window.clone())?;
@@ -58,7 +68,7 @@ impl Uterm {
             window,
             surface,
             Vec::new(),
-            self.proxy.clone(),
+            self.listener.clone(),
             clipboard,
             face,
             self.font_size,
@@ -75,15 +85,20 @@ impl Uterm {
             let height = cells_to_px(rows_with_bar, st.cell_h, g.cols, g.rows)?;
             let _ = st
                 .window
-                .request_inner_size(PhysicalSize::new(width, height));
+                .request_surface_size(Size::Physical(PhysicalSize::new(width, height)));
             (g.cols, g.rows)
         } else {
             st.grid_dims()
         };
-        let listener = Listener {
-            proxy: self.proxy.clone(),
-        };
-        let first = Tab::new(0, cols, rows, st.cell_w, st.cell_h, listener, &st.command)?;
+        let first = Tab::new(
+            0,
+            cols,
+            rows,
+            st.cell_w,
+            st.cell_h,
+            st.listener.clone(),
+            &st.command,
+        )?;
         st.tabs.push(first);
 
         st.sync_window_title();
@@ -91,19 +106,8 @@ impl Uterm {
         self.state = Some(st);
         Ok(())
     }
-}
 
-impl ApplicationHandler<UiEvent> for Uterm {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() || self.error.is_some() {
-            return;
-        }
-        if let Err(err) = self.start(event_loop) {
-            self.fail(event_loop, err);
-        }
-    }
-
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
+    fn handle_ui_event(&mut self, event_loop: &dyn ActiveEventLoop, event: UiEvent) {
         let Some(st) = &mut self.state else {
             return;
         };
@@ -137,10 +141,29 @@ impl ApplicationHandler<UiEvent> for Uterm {
             }
         }
     }
+}
+
+impl ApplicationHandler for Uterm {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if self.state.is_some() || self.error.borrow().is_some() {
+            return;
+        }
+        if let Err(err) = self.start(event_loop) {
+            self.fail(event_loop, err);
+        }
+    }
+
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // Wake-ups are coalesced; the events themselves live in the channel.
+        let events: Vec<_> = self.receiver.try_iter().collect();
+        for event in events {
+            self.handle_ui_event(event_loop, event);
+        }
+    }
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         _id: WinitWindowId,
         event: WindowEvent,
     ) {
@@ -150,7 +173,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => st.render(),
-            WindowEvent::Resized(size) => {
+            WindowEvent::SurfaceResized(size) => {
                 // A minimized window reports 0x0; resizing the grid to the
                 // clamped minimum would destroy scrollback for no reason.
                 if size.width == 0 || size.height == 0 {
@@ -171,7 +194,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
                     self.fail(event_loop, err);
                     return;
                 }
-                let size = st.window.inner_size();
+                let size = st.window.surface_size();
                 if let Err(err) = st.resize_all_tabs_with(size.width as usize, size.height as usize)
                 {
                     self.fail(event_loop, err);
@@ -182,16 +205,57 @@ impl ApplicationHandler<UiEvent> for Uterm {
             WindowEvent::ModifiersChanged(m) => {
                 st.modifiers = m;
             }
-            WindowEvent::DroppedFile(path) => {
-                // Insert the path as text, never open or execute it.
-                st.paste_text(path.to_string_lossy().into_owned());
+            WindowEvent::DragEntered { id, .. } => {
+                // Accept the drag so the OS sends DragDropped rather than DragLeft.
+                let _ = event_loop.set_valid_dnd_actions(id, &[DndAction::Copy]);
+            }
+            WindowEvent::DragDropped { id, .. } => {
+                // Prefer a URI list (file drops), falling back to plain text.
+                // In both cases the data is pasted as text below; never opened.
+                let kind = event_loop.data_transfer(id).ok().and_then(|transfer| {
+                    if transfer.has_type(&TypeHint::UriList) {
+                        Some(TypeHint::UriList)
+                    } else if transfer.has_type(&TypeHint::Plaintext) {
+                        Some(TypeHint::Plaintext)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(kind) = kind {
+                    if let Ok(serial) = event_loop.fetch_data_transfer(id, &kind) {
+                        self.pending_drop = Some(serial);
+                    }
+                }
+            }
+            WindowEvent::DragLeft { .. } => {
+                self.pending_drop = None;
+            }
+            WindowEvent::DataTransferReceived { serial, value, .. } => {
+                if self.pending_drop != Some(serial) {
+                    return;
+                }
+                self.pending_drop = None;
+                let text = match value.type_().hint() {
+                    Some(TypeHint::UriList) => value.try_as_uris().ok().map(|uris| {
+                        uris.iter()
+                            .map(|uri| uri_to_text(uri))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }),
+                    Some(TypeHint::Plaintext) => value.try_as_string().ok(),
+                    _ => None,
+                };
+                if let Some(text) = text {
+                    st.paste_text(text);
+                    st.window.request_redraw();
+                }
             }
             WindowEvent::Focused(false) => {
                 // No release event arrives after the focus loss.
                 st.mouse_buttons = [false; 3];
                 st.local_pointer = LocalPointerState::Idle;
             }
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::PointerMoved { position, .. } => {
                 st.cursor_pos = (position.x, position.y);
                 if st.mouse_report_mode() {
                     st.local_pointer = LocalPointerState::Idle;
@@ -203,7 +267,11 @@ impl ApplicationHandler<UiEvent> for Uterm {
                     st.window.request_redraw();
                 }
             }
-            WindowEvent::MouseInput { state, button, .. } => {
+            WindowEvent::PointerButton {
+                state,
+                button: ButtonSource::Mouse(button),
+                ..
+            } => {
                 st.handle_mouse_press(button, state, event_loop);
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -217,6 +285,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
                                 (pos.y / st.cell_h as f64).round() as i32
                             }
                         }
+                        _ => 0,
                     };
                     if lines != 0 {
                         let (btn, count) = if lines > 0 {
@@ -276,7 +345,7 @@ impl ApplicationHandler<UiEvent> for Uterm {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let Some(st) = &mut self.state else {
             return;
         };
@@ -287,5 +356,51 @@ impl ApplicationHandler<UiEvent> for Uterm {
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
         }
+    }
+}
+
+/// Turn a dropped `file:` URI into the plain path text that uterm inserts.
+/// The text is only ever pasted into the terminal, never opened or executed.
+fn uri_to_text(uri: &str) -> String {
+    let path = uri
+        .strip_prefix("file://")
+        .map(|rest| rest.strip_prefix("localhost").unwrap_or(rest))
+        .unwrap_or(uri);
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+                out.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uri_to_text;
+
+    #[test]
+    fn dropped_file_uris_become_plain_path_text() {
+        assert_eq!(uri_to_text("file:///tmp/a%20b.txt"), "/tmp/a b.txt");
+        assert_eq!(uri_to_text("file://localhost/tmp/x"), "/tmp/x");
+        assert_eq!(uri_to_text("https://example.com"), "https://example.com");
+        assert_eq!(uri_to_text("%2Ftmp%2Fx"), "/tmp/x");
     }
 }

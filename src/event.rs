@@ -1,5 +1,6 @@
 use rio_vt::clipboard::ClipboardType;
 use rio_vt::event::{EventListener, RioEvent, WindowId};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use winit::event_loop::EventLoopProxy;
 
@@ -16,36 +17,47 @@ pub(crate) enum UiEvent {
     ),
 }
 
+/// Bridge between rio's background threads and the winit event loop.
+///
+/// Winit 0.31's proxy only carries an untyped wake-up; the event data goes
+/// through a channel that `ApplicationHandler::proxy_wake_up` drains.
 #[derive(Clone)]
 pub(crate) struct Listener {
-    pub(crate) proxy: EventLoopProxy<UiEvent>,
+    pub(crate) sender: Sender<UiEvent>,
+    pub(crate) proxy: EventLoopProxy,
+}
+
+impl Listener {
+    fn notify(&self, event: UiEvent) {
+        if self.sender.send(event).is_ok() {
+            self.proxy.wake_up();
+        }
+    }
 }
 
 impl EventListener for Listener {
     fn send_event(&self, event: RioEvent, _id: WindowId) {
         match event {
             RioEvent::CloseTerminal(route) | RioEvent::ChildExited(route, _) => {
-                let _ = self.proxy.send_event(UiEvent::TabExited(route));
+                self.notify(UiEvent::TabExited(route));
             }
             RioEvent::Title(route, title) => {
-                let _ = self.proxy.send_event(UiEvent::TitleChanged(route, title));
+                self.notify(UiEvent::TitleChanged(route, title));
             }
             RioEvent::ClipboardStore(ty, text) => {
-                let _ = self.proxy.send_event(UiEvent::ClipboardStore(ty, text));
+                self.notify(UiEvent::ClipboardStore(ty, text));
             }
             RioEvent::ClipboardLoad(route, ty, formatter) => {
-                let _ = self
-                    .proxy
-                    .send_event(UiEvent::ClipboardLoad(route, ty, formatter));
+                self.notify(UiEvent::ClipboardLoad(route, ty, formatter));
             }
             RioEvent::ResetTitle => {
-                let _ = self.proxy.send_event(UiEvent::Wakeup);
+                self.notify(UiEvent::Wakeup);
             }
             RioEvent::SyncWindowTitle => {
-                let _ = self.proxy.send_event(UiEvent::TitleSync);
+                self.notify(UiEvent::TitleSync);
             }
             _ => {
-                let _ = self.proxy.send_event(UiEvent::Wakeup);
+                self.notify(UiEvent::Wakeup);
             }
         }
     }

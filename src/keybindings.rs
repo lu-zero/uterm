@@ -276,7 +276,7 @@ mod tests {
             Some(Action::NextTab)
         );
         assert_eq!(
-            lookup_key(ModifiersState::SUPER, &Key::Character("c".into())),
+            lookup_key(ModifiersState::META, &Key::Character("c".into())),
             Some(Action::Copy)
         );
         assert_eq!(

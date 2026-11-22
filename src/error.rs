@@ -13,6 +13,7 @@ pub enum Error {
     },
     EventLoop(winit::error::EventLoopError),
     Window(winit::error::OsError),
+    CreateWindow(winit::error::CreateWindowError),
     Surface(softbuffer::SoftBufferError),
     Font(String),
     Pty(std::io::Error),
@@ -30,6 +31,7 @@ impl fmt::Display for Error {
             ),
             Error::EventLoop(err) => write!(f, "event loop failed: {err}"),
             Error::Window(err) => write!(f, "failed to create the window: {err}"),
+            Error::CreateWindow(err) => write!(f, "failed to create the window: {err}"),
             Error::Surface(err) => write!(f, "failed to create the drawing surface: {err}"),
             Error::Font(err) => f.write_str(err),
             Error::Pty(err) => write!(f, "failed to create the pty: {err}"),
@@ -43,6 +45,7 @@ impl std::error::Error for Error {
         match self {
             Error::EventLoop(err) => Some(err),
             Error::Window(err) => Some(err),
+            Error::CreateWindow(err) => Some(err),
             Error::Surface(err) => Some(err),
             Error::Pty(err) => Some(err),
             Error::Machine(err) => Some(err.as_ref()),
@@ -60,6 +63,12 @@ impl From<winit::error::EventLoopError> for Error {
 impl From<winit::error::OsError> for Error {
     fn from(err: winit::error::OsError) -> Self {
         Error::Window(err)
+    }
+}
+
+impl From<winit::error::CreateWindowError> for Error {
+    fn from(err: winit::error::CreateWindowError) -> Self {
+        Error::CreateWindow(err)
     }
 }
 

@@ -6,7 +6,7 @@ pub(crate) mod tabs;
 
 use crate::cli::PRESET_SIZES;
 use crate::error::Error;
-use crate::event::UiEvent;
+use crate::event::Listener;
 use crate::keybindings::Action;
 use crate::terminal::{cells_to_px, Tab};
 use rio_vt::clipboard::{Clipboard, ClipboardType};
@@ -19,9 +19,9 @@ use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use term_atlas::{Atlas, Face, GlyphRect, PixelFormat};
-use winit::dpi::PhysicalSize;
+use winit::dpi::{PhysicalSize, Size};
 use winit::event::Modifiers;
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
+use winit::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::Window;
 
@@ -47,7 +47,7 @@ pub(crate) struct SystemClipboard {
 }
 
 impl SystemClipboard {
-    pub(crate) fn new(event_loop: &ActiveEventLoop) -> Self {
+    pub(crate) fn new(event_loop: &dyn ActiveEventLoop) -> Self {
         let display = event_loop.owned_display_handle();
         let clipboard = unsafe {
             display
@@ -72,8 +72,8 @@ impl SystemClipboard {
 }
 
 pub(crate) struct AppState {
-    pub(crate) window: Rc<Window>,
-    pub(crate) surface: Surface<Rc<Window>, Rc<Window>>,
+    pub(crate) window: Rc<dyn Window>,
+    pub(crate) surface: Surface<Rc<dyn Window>, Rc<dyn Window>>,
     pub(crate) tabs: Vec<Tab>,
     pub(crate) active: usize,
     pub(crate) next_tab_id: usize,
@@ -91,7 +91,7 @@ pub(crate) struct AppState {
     pub(crate) cell_w: usize,
     pub(crate) cell_h: usize,
     pub(crate) modifiers: Modifiers,
-    pub(crate) proxy: EventLoopProxy<UiEvent>,
+    pub(crate) listener: Listener,
     pub(crate) cursor_pos: (f64, f64),
     pub(crate) mouse_buttons: [bool; 3], // left, middle, right
     pub(crate) local_pointer: LocalPointerState,
@@ -116,10 +116,10 @@ fn atlas_for(face: &Face, font_size: f32, scale: f64) -> Atlas {
 impl AppState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        window: Rc<Window>,
-        surface: Surface<Rc<Window>, Rc<Window>>,
+        window: Rc<dyn Window>,
+        surface: Surface<Rc<dyn Window>, Rc<dyn Window>>,
         tabs: Vec<Tab>,
-        proxy: EventLoopProxy<UiEvent>,
+        listener: Listener,
         clipboard: SystemClipboard,
         face: Face,
         font_size: f32,
@@ -147,7 +147,7 @@ impl AppState {
             cell_w,
             cell_h,
             modifiers: Modifiers::default(),
-            proxy,
+            listener,
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
             local_pointer: LocalPointerState::Idle,
@@ -183,7 +183,7 @@ impl AppState {
     pub(crate) fn apply_action(
         &mut self,
         action: Action,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
     ) -> Result<(), Error> {
         match action {
             Action::NewTab => self.new_tab(),
@@ -255,7 +255,7 @@ impl AppState {
         let height = cells_to_px(rows_with_bar, self.cell_h, cols, rows)?;
         let _ = self
             .window
-            .request_inner_size(PhysicalSize::new(width, height));
+            .request_surface_size(Size::Physical(PhysicalSize::new(width, height)));
         Ok(())
     }
 
@@ -287,7 +287,7 @@ impl AppState {
     }
 
     pub(crate) fn grid_dims(&self) -> (usize, usize) {
-        let sz = self.window.inner_size();
+        let sz = self.window.surface_size();
         self.grid_dims_from(sz.width as usize, sz.height as usize)
     }
 
