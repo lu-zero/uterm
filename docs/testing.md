@@ -69,3 +69,21 @@ empty log) with the app's shell replaced by `/bin/true`. The close button and
 Ctrl+Shift+W could not be injected from macOS — System Events synthetic events
 did not reach the Wayland client — so those two paths still need a real
 Wayland session.
+
+## Shared-crate allocation notes
+
+Review of term-atlas 0.1.4 / term-font 0.1.1 by the rune-term side:
+
+- `Atlas::ensure`/`ensure_str` are allocation-free on a cache hit (ASCII array
+  lookup / cluster-map hash and compare). Misses allocate scratch buffers,
+  a rustybuzz buffer and one `Box<str>` per distinct cluster, and misses are
+  capped at 4096; past that, novel clusters re-rasterize each frame.
+- `Face::load` caches by family name and the fallback data is `OnceLock`-cached;
+  there is no repeated fontique scan from a configured face.
+- `term_font::discover` has no cache of its own and builds a fresh fontique
+  `Collection`/`SourceCache` per call, but atlas miss caching keeps it off the
+  per-frame path in uterm.
+- Suggested shared-crate improvements: reuse the cluster scratch `Vec`s and
+  `regular_coords` Vec as `Atlas` fields, and add a `(family, char)` discovery
+  cache in term-font. A four-pane headless rune-term benchmark likewise found
+  no frame-time benefit from allocator tuning: repaint/upload dominates.
