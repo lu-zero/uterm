@@ -51,10 +51,12 @@ cargo run -- --profile mc -- mc
 
 ### Build variants
 
-The default build enables both window backends, the bundled font, the compact
-CJK fallback and the emoji fallback. A `lean` build drops only the emoji data
-crate, keeping clipboard/OSC 52, `--list-fonts`, Japanese coverage, profiles,
-tabs and both backends:
+The default build enables both window backends, the bundled font, all CJK
+fallback tiers (common, Japanese and full Chinese) and the emoji fallback. On
+a system with no CJK fonts installed, those embedded tiers are what keep kanji
+and Hanzi from being blank. A `lean` build drops only the emoji data crate,
+keeping clipboard/OSC 52, `--list-fonts`, full CJK coverage, profiles, tabs
+and both backends:
 
 ```bash
 cargo build --release --no-default-features --features lean

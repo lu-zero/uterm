@@ -10,9 +10,9 @@ keywords = ["terminal", "emulator"]
 categories = ["command-line-utilities"]
 
 [features]
-default = ["x11", "wayland", "bundled-font", "fallback-common", "emoji-fallback"]
+default = ["x11", "wayland", "bundled-font", "fallback-common", "fallback-ja", "fallback-zh-full", "emoji-fallback"]
 # Everything except the emoji data crate (and the opt-in allocator).
-lean = ["x11", "wayland", "bundled-font", "fallback-common"]
+lean = ["x11", "wayland", "bundled-font", "fallback-common", "fallback-ja", "fallback-zh-full"]
 x11 = ["winit/x11", "softbuffer/x11", "softbuffer/x11-dlopen", "rio-vt/x11"]
 wayland = [
     "winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita",
@@ -20,6 +20,8 @@ wayland = [
 ]
 bundled-font = ["term-atlas/bundled-font"]
 fallback-common = ["term-atlas/fallback-common"]
+fallback-ja = ["term-atlas/fallback-ja"]
+fallback-zh-full = ["term-atlas/fallback-zh-full"]
 emoji-fallback = ["term-atlas/emoji-fallback"]
 mimalloc = ["dep:mimalloc"]
 
