@@ -8,15 +8,14 @@ use crate::cli::PRESET_SIZES;
 use crate::error::Error;
 use crate::event::UiEvent;
 use crate::terminal::{cells_to_px, Tab};
-use fontdue::Font;
 use rio_vt::clipboard::{Clipboard, ClipboardType};
 use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
 use softbuffer::Surface;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use term_atlas::{Atlas, Face, PixelFormat};
 use winit::dpi::PhysicalSize;
 use winit::event::Modifiers;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
@@ -75,22 +74,16 @@ pub(crate) struct AppState {
     pub(crate) tabs: Vec<Tab>,
     pub(crate) active: usize,
     pub(crate) next_tab_id: usize,
-    /// Faces in fallback order. The first face sets the cell size.
-    pub(crate) fonts: Vec<Font>,
-    /// The face whose family is preferred when looking for a fallback.
-    pub(crate) font_family: String,
+    /// Primary face and its glyph atlas; the atlas handles fallback and caching.
+    pub(crate) face: Face,
+    pub(crate) atlas: Atlas,
     /// Command from `--`, used for every tab instead of the default shell.
     pub(crate) command: Vec<String>,
     /// Point size from the config, before DPI scaling.
     pub(crate) font_size: f32,
-    pub(crate) font_px: f32,
     pub(crate) cell_w: usize,
     pub(crate) cell_h: usize,
-    pub(crate) ascent: f32,
     pub(crate) modifiers: Modifiers,
-    pub(crate) glyph_cache: HashMap<char, (fontdue::Metrics, Vec<u8>)>,
-    /// Codepoints no configured or discovered face could draw; do not retry each frame.
-    pub(crate) glyph_misses: HashSet<char>,
     pub(crate) proxy: EventLoopProxy<UiEvent>,
     pub(crate) cursor_pos: (f64, f64),
     pub(crate) mouse_buttons: [bool; 3], // left, middle, right
@@ -102,6 +95,15 @@ pub(crate) struct AppState {
     pub(crate) preset_index: usize,
 }
 
+/// Device-pixel cell pitch for a face at a point size, and an atlas using it.
+fn atlas_for(face: &Face, font_size: f32, scale: f64) -> Atlas {
+    let (width_pt, height_pt) = term_atlas::face_cell_for(face, font_size);
+    let scale = scale as f32;
+    let width = (width_pt * scale).round().max(1.0) as u32;
+    let height = (height_pt * scale).round().max(1.0) as u32;
+    Atlas::with_face_format(face.clone(), width, height, PixelFormat::Argb)
+}
+
 impl AppState {
     pub(crate) fn new(
         window: Rc<Window>,
@@ -109,31 +111,29 @@ impl AppState {
         tabs: Vec<Tab>,
         proxy: EventLoopProxy<UiEvent>,
         clipboard: SystemClipboard,
-        fonts: Vec<Font>,
+        face: Face,
         font_size: f32,
-        font_family: String,
         command: Vec<String>,
     ) -> Result<Self, Error> {
-        if fonts.is_empty() {
-            return Err(Error::Font("no font configured".to_string()));
+        if !face.valid() {
+            return Err(Error::Font("no usable font configured".to_string()));
         }
+        let atlas = atlas_for(&face, font_size, window.scale_factor());
+        let cell_w = atlas.cell().0 as usize;
+        let cell_h = atlas.cell().1 as usize;
         let mut st = Self {
             window,
             surface,
             tabs,
             active: 0,
             next_tab_id: 1,
-            fonts,
-            font_family,
+            face,
+            atlas,
             command,
             font_size,
-            font_px: font_size,
-            cell_w: 8,
-            cell_h: 16,
-            ascent: 0.0,
+            cell_w,
+            cell_h,
             modifiers: Modifiers::default(),
-            glyph_cache: HashMap::new(),
-            glyph_misses: HashSet::new(),
             proxy,
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
@@ -148,21 +148,9 @@ impl AppState {
     }
 
     pub(crate) fn sync_font_metrics(&mut self, scale: f64) -> Result<(), Error> {
-        let scale = scale as f32;
-        let font_px = (self.font_size * scale * (96.0 / 72.0)).round().max(4.0);
-        let primary = &self.fonts[0];
-        let lm = primary
-            .horizontal_line_metrics(font_px)
-            .ok_or(Error::FontMetrics(font_px))?;
-        let m_m = primary.metrics('M', font_px);
-        if self.font_px != font_px {
-            self.glyph_cache.clear();
-            self.glyph_misses.clear();
-        }
-        self.font_px = font_px;
-        self.cell_w = m_m.advance_width.ceil().max(1.0) as usize;
-        self.cell_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as usize;
-        self.ascent = lm.ascent;
+        self.atlas = atlas_for(&self.face, self.font_size, scale);
+        self.cell_w = self.atlas.cell().0 as usize;
+        self.cell_h = self.atlas.cell().1 as usize;
         Ok(())
     }
 

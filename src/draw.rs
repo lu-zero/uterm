@@ -264,44 +264,64 @@ pub(crate) fn blend(dst: u32, src: u32, a: u32, ia: u32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
-pub(crate) fn blit_glyph(
+/// Blit one atlas cell sprite into a softbuffer framebuffer (0x00RRGGBB).
+///
+/// The gray atlas is one coverage byte per pixel; the color atlas holds
+/// premultiplied ARGB8888 bytes when `PixelFormat::Argb` is selected.
+pub(crate) fn blit_atlas(
     buf: &mut [u32],
     bw: usize,
     bh: usize,
-    x0: i32,
-    y0: i32,
-    metrics: &fontdue::Metrics,
-    bitmap: &[u8],
+    atlas: &term_atlas::Atlas,
+    rect: term_atlas::GlyphRect,
+    x0: usize,
+    y0: usize,
     color: u32,
 ) {
-    for y in 0..metrics.height {
-        let py = y0 + y as i32;
-        if py < 0 || py >= bh as i32 {
+    let stride = term_atlas::ATLAS_SIZE as usize;
+    let gray = atlas.pixels();
+    let color_pixels = atlas.color_pixels();
+    for y in 0..rect.h as usize {
+        let py = y0 + y;
+        if py >= bh {
             continue;
         }
-        for x in 0..metrics.width {
-            let px = x0 + x as i32;
-            if px < 0 || px >= bw as i32 {
+        for x in 0..rect.w as usize {
+            let px = x0 + x;
+            if px >= bw {
                 continue;
             }
-            let Some(offset) = y
-                .checked_mul(metrics.width)
-                .and_then(|off| off.checked_add(x))
-            else {
+            let Some(idx) = pixel_index(bw, px, py) else {
                 continue;
             };
-            let Some(alpha) = bitmap.get(offset).map(|sample| u32::from(*sample)) else {
+            let Some(dst) = buf.get_mut(idx) else {
                 continue;
             };
-            if alpha == 0 {
-                continue;
-            }
-            let Some(idx) = pixel_index(bw, px as usize, py as usize) else {
-                continue;
-            };
-            let ia = 255 - alpha;
-            if let Some(pixel) = buf.get_mut(idx) {
-                *pixel = blend(*pixel, color, alpha, ia);
+            let src_idx = (rect.y as usize + y) * stride + rect.x as usize + x;
+            if rect.atlas == 0 {
+                let Some(&alpha) = gray.get(src_idx) else {
+                    continue;
+                };
+                if alpha != 0 {
+                    *dst = blend(*dst, color, alpha as u32, (255 - alpha) as u32);
+                }
+            } else if let Some(pixels) = color_pixels {
+                let offset = src_idx * 4;
+                let Some(bytes) = pixels.get(offset..offset + 4) else {
+                    continue;
+                };
+                let a = bytes[3] as u32;
+                if a == 0 {
+                    continue;
+                }
+                let src = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]);
+                let ia = 255 - a;
+                let channel = |shift: u32| -> u32 {
+                    let s = (src >> shift) & 0xff;
+                    let d = ((*dst >> shift) & 0xff) * ia / 255;
+                    (s + d).min(255)
+                };
+                *dst = (channel(16) << 16) | (channel(8) << 8) | channel(0);
             }
         }
     }

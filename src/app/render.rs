@@ -1,76 +1,25 @@
 use super::AppState;
 use crate::draw::{
-    blit_glyph, fill_rect, fill_rect_alpha, resolve_ansi_color, resolve_named, rgb_u32,
+    blit_atlas, fill_rect, fill_rect_alpha, resolve_ansi_color, resolve_named, rgb_u32,
 };
-use fontdue::Font;
 use rio_vt::ansi::CursorShape;
 use rio_vt::config::colors::NamedColor;
 use rio_vt::crosswords::grid::Dimensions;
 use rio_vt::crosswords::pos::{Column, Line, Pos};
+use rio_vt::crosswords::square::Wide;
+use std::collections::HashMap;
 use std::num::NonZeroU32;
+use term_atlas::GlyphRect;
 
 struct CellRender {
     ch: char,
     fg: u32,
     bg: u32,
-}
-
-/// First face that has `ch` and paints ink. The index is that face in `fonts`.
-pub(crate) fn rasterize_from(
-    fonts: &[Font],
-    px: f32,
-    ch: char,
-) -> Option<(usize, fontdue::Metrics, Vec<u8>)> {
-    for (index, font) in fonts.iter().enumerate() {
-        if !font.has_glyph(ch) {
-            continue;
-        }
-        let (metrics, bitmap) = font.rasterize(ch, px);
-        if metrics.advance_width > 0.0 && metrics.height > 0 && bitmap.iter().any(|&a| a > 0) {
-            return Some((index, metrics, bitmap));
-        }
-    }
-    None
+    /// 1 for a normal glyph, 2 for a wide glyph's leading cell, 0 for a spacer.
+    cells: u8,
 }
 
 impl AppState {
-    fn rasterize_char(&self, ch: char) -> Option<(fontdue::Metrics, Vec<u8>)> {
-        let (_face, metrics, bitmap) = rasterize_from(&self.fonts, self.font_px, ch)?;
-        Some((metrics, bitmap))
-    }
-
-    pub(crate) fn ensure_glyph(&mut self, ch: char) {
-        if self.glyph_cache.contains_key(&ch) || self.glyph_misses.contains(&ch) {
-            return;
-        }
-        let mut raster = self.rasterize_char(ch);
-        if raster.is_none() {
-            // No configured face can draw it. Try system candidates with
-            // fontdue too: fontique's charmap may disagree with fontdue's.
-            for (bytes, index) in crate::fonts::discover(&self.font_family, ch) {
-                let Ok(font) = crate::fonts::font_from(&bytes, index, &self.font_family) else {
-                    continue;
-                };
-                if !font.has_glyph(ch) {
-                    continue;
-                }
-                self.fonts.push(font);
-                raster = self.rasterize_char(ch);
-                if raster.is_some() {
-                    break;
-                }
-            }
-        }
-        match raster {
-            Some(raster) => {
-                self.glyph_cache.insert(ch, raster);
-            }
-            None => {
-                self.glyph_misses.insert(ch);
-            }
-        }
-    }
-
     pub(crate) fn render(&mut self) {
         if self.tabs.is_empty() {
             return;
@@ -131,6 +80,7 @@ impl AppState {
                             ch: '\0',
                             fg: default_fg,
                             bg: default_bg,
+                            cells: 1,
                         });
                         continue;
                     };
@@ -143,10 +93,16 @@ impl AppState {
                     {
                         std::mem::swap(&mut fg, &mut bg);
                     }
+                    let cells_wide = match square.wide() {
+                        Wide::Wide => 2,
+                        Wide::Spacer | Wide::LeadingSpacer => 0,
+                        Wide::Narrow => 1,
+                    };
                     cells.push(CellRender {
                         ch: square.c(),
                         fg,
                         bg,
+                        cells: cells_wide,
                     });
                 }
             }
@@ -168,22 +124,30 @@ impl AppState {
         };
 
         let tab_layouts = self.tab_layouts(width as usize);
-        self.ensure_glyph('×');
+        // Rasterize every glyph before borrowing the framebuffer from self.
+        let mut glyphs: HashMap<(char, u8), GlyphRect> = HashMap::new();
+        let mut need = |ch: char, cells: u8| {
+            if let Some(rect) = self.atlas.ensure(ch, cells) {
+                glyphs.insert((ch, cells), rect);
+            }
+        };
+        need('×', 1);
         for (label, _, _, _) in &tab_layouts {
             for ch in label.chars() {
-                self.ensure_glyph(ch);
+                need(ch, 1);
             }
         }
-        if let Some((_, text)) = self.resize_overlay.clone() {
+        if let Some((_, text)) = &self.resize_overlay {
             for ch in text.chars() {
-                self.ensure_glyph(ch);
+                need(ch, 1);
             }
         }
         for cell in &cells {
-            if cell.ch != '\0' && cell.ch != ' ' {
-                self.ensure_glyph(cell.ch);
+            if cell.cells > 0 && cell.ch != '\0' && cell.ch != ' ' {
+                need(cell.ch, cell.cells);
             }
         }
+        drop(need);
 
         let mut buffer = match self.surface.buffer_mut() {
             Ok(b) => b,
@@ -254,28 +218,31 @@ impl AppState {
                 if cx >= max_x {
                     break;
                 }
-                if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
-                    let gx = cx + metrics.xmin;
-                    let gy = self.ascent as i32 - metrics.ymin - metrics.height as i32;
-                    blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, fg);
-                    cx += metrics.advance_width.ceil() as i32;
-                } else {
-                    cx += self.cell_w as i32;
-                }
-            }
-            // close button "×"
-            if let Some(cx0) = close_x0 {
-                if let Some((metrics, bitmap)) = self.glyph_cache.get(&'×') {
-                    let gx = (*cx0 as i32) + metrics.xmin;
-                    let gy = self.ascent as i32 - metrics.ymin - metrics.height as i32;
-                    blit_glyph(
+                if let Some(&rect) = glyphs.get(&(ch, 1)) {
+                    blit_atlas(
                         &mut buffer,
                         bw,
                         bh,
-                        gx,
-                        gy,
-                        metrics,
-                        bitmap,
+                        &self.atlas,
+                        rect,
+                        cx.max(0) as usize,
+                        1,
+                        fg,
+                    );
+                }
+                cx += self.cell_w as i32;
+            }
+            // close button "×"
+            if let Some(cx0) = close_x0 {
+                if let Some(&rect) = glyphs.get(&('×', 1)) {
+                    blit_atlas(
+                        &mut buffer,
+                        bw,
+                        bh,
+                        &self.atlas,
+                        rect,
+                        *cx0,
+                        1,
                         if is_active { active_fg } else { close_fg },
                     );
                 }
@@ -333,13 +300,9 @@ impl AppState {
                     sel.contains(Pos::new(Line(r as i32 - display_offset as i32), Column(c)))
                 });
                 let fg = if selected { cell.bg } else { cell.fg };
-                let ch = cell.ch;
-                if ch != '\0' && ch != ' ' {
-                    if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
-                        let gx = px as i32 + metrics.xmin;
-                        let gy =
-                            py as i32 + self.ascent as i32 - metrics.ymin - metrics.height as i32;
-                        blit_glyph(&mut buffer, bw, bh, gx, gy, metrics, bitmap, fg);
+                if cell.cells > 0 && cell.ch != '\0' && cell.ch != ' ' {
+                    if let Some(&rect) = glyphs.get(&(cell.ch, cell.cells)) {
+                        blit_atlas(&mut buffer, bw, bh, &self.atlas, rect, px, py, fg);
                     }
                 }
 
@@ -395,26 +358,21 @@ impl AppState {
                 1,
                 rgb_u32(0x6b, 0xb6, 0xff),
             );
-            let mut cx = (x0 + 3) as i32;
+            let mut cx = x0 + 3;
             for ch in text.chars() {
-                if let Some((metrics, bitmap)) = self.glyph_cache.get(&ch) {
-                    let gx = cx + metrics.xmin;
-                    let gy =
-                        y0 as i32 + 2 + self.ascent as i32 - metrics.ymin - metrics.height as i32;
-                    blit_glyph(
+                if let Some(&rect) = glyphs.get(&(ch, 1)) {
+                    blit_atlas(
                         &mut buffer,
                         bw,
                         bh,
-                        gx,
-                        gy,
-                        metrics,
-                        bitmap,
+                        &self.atlas,
+                        rect,
+                        cx,
+                        y0 + 2,
                         rgb_u32(0xf0, 0xf4, 0xfa),
                     );
-                    cx += metrics.advance_width.ceil() as i32;
-                } else {
-                    cx += self.cell_w as i32;
                 }
+                cx += self.cell_w;
             }
         }
 
@@ -492,71 +450,31 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::rasterize_from;
-    use crate::draw::blit_glyph;
-    use crate::fonts::{bundled_font, DEFAULT_FACE};
-    use fontdue::{Font, Metrics};
-
-    fn cell_width(font: &Font, px: f32) -> (usize, f32) {
-        let (metrics, _) = font.rasterize('M', px);
-        let width = metrics.advance_width.ceil().max(1.0) as usize;
-        (width, metrics.advance_width)
+    fn atlas() -> term_atlas::Atlas {
+        term_atlas::Atlas::with_face_format(
+            term_atlas::Face::bundled(),
+            10,
+            18,
+            term_atlas::PixelFormat::Argb,
+        )
     }
 
     #[test]
-    fn maple_paints_latin_and_ukrainian_and_skips_japanese() {
-        let font = bundled_font(DEFAULT_FACE).unwrap();
-        let fonts = [font];
-        let px = 32.0;
-        let (_cell_w, m_advance) = cell_width(&fonts[0], px);
+    fn atlas_draws_latin_cyrillic_and_fallback_cjk() {
+        let mut atlas = atlas();
         for ch in ['A', 'Z', 'ї', 'є', 'і', 'ґ', 'ш', 'Є'] {
-            let (face, metrics, _) = rasterize_from(&fonts, px, ch).unwrap_or_else(|| {
-                panic!("U+{:04X} {ch} has no ink in Maple", ch as u32);
-            });
-            assert_eq!(face, 0);
-            assert!(
-                (metrics.advance_width - m_advance).abs() < 0.01,
-                "{ch} advance {} vs M {m_advance}",
-                metrics.advance_width
-            );
+            assert!(atlas.ensure(ch, 1).is_some(), "{ch} has no glyph");
         }
-        assert!(rasterize_from(&fonts, px, '日').is_none());
-        assert!(rasterize_from(&fonts, px, 'あ').is_none());
+        for ch in ['日', '码'] {
+            assert!(atlas.ensure(ch, 2).is_some(), "{ch} has no fallback glyph");
+        }
     }
 
     #[test]
-    fn a_wide_bitmap_continues_into_the_next_cell() {
-        let font = bundled_font(DEFAULT_FACE).unwrap();
-        let (cell_w, _) = cell_width(&font, 32.0);
-        let metrics = Metrics {
-            width: cell_w * 3,
-            height: cell_w,
-            advance_width: (cell_w * 2) as f32,
-            ..Metrics::default()
-        };
-        let bitmap = vec![255u8; metrics.width * metrics.height];
-        let (bw, bh) = (cell_w * 5, cell_w);
-        let mut buf = vec![0u32; bw * bh];
-        // Column 2 starts here; a three-cell-wide glyph spills into columns 3 and 4.
-        blit_glyph(
-            &mut buf,
-            bw,
-            bh,
-            (cell_w * 2) as i32,
-            0,
-            &metrics,
-            &bitmap,
-            0x00ff_ffff,
-        );
-        let has_ink = |from: usize, to: usize| {
-            buf.chunks(bw)
-                .any(|row| row[from..to].iter().any(|&p| p != 0))
-        };
-        assert!(has_ink(cell_w * 2, cell_w * 3), "ink in its own cell");
-        assert!(has_ink(cell_w * 3, cell_w * 4), "ink in the next cell");
-        assert!(
-            has_ink(cell_w * 4, cell_w * 5),
-            "ink in the cell after that"
-        );
+    fn wide_glyph_occupies_two_cells() {
+        let mut atlas = atlas();
+        let rect = atlas.ensure('日', 2).expect("wide glyph");
+        assert_eq!(rect.w, 20);
+        assert_eq!(rect.h, 18);
     }
 }

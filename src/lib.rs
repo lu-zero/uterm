@@ -50,9 +50,8 @@ pub fn run() -> Result<(), Error> {
     }
     let config::Session {
         geometry,
-        fonts,
+        face,
         font_size,
-        font_family,
         command,
     } = config::load(config.as_deref(), profile.as_deref(), geometry, command)?;
     let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
@@ -62,9 +61,8 @@ pub fn run() -> Result<(), Error> {
         proxy,
         state: None,
         geometry,
-        fonts,
+        face: Some(face),
         font_size,
-        font_family,
         command,
         error: None,
     };

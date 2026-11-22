@@ -7,11 +7,11 @@
 //! 4. `~/.config/uterm/config.toml`
 //!
 //! A missing default file keeps the bundled Maple Mono NF. A path given with
-//! `--config` or `$UTERM_CONFIG` must exist. `fonts` is a fallback list, tried
-//! in order. The first face sets the cell size. Each later face adds glyphs
-//! the earlier faces lack. Entries are the bundled keyword `default`, an
-//! installed family name, or a font path; glyphs none of them cover are
-//! looked up in system fonts. `font_size` sets the point size, default 14.
+//! `--config` or `$UTERM_CONFIG` must exist. The first `fonts` entry selects
+//! the primary face, which sets the cell size; entries are the bundled keyword
+//! `default`, an installed family name, or a font path. Missing glyphs are
+//! supplied by term-atlas's embedded CJK fallback tiers and system fonts.
+//! `font_size` sets the point size, default 14.
 //!
 //! `[profiles.NAME]` may set `geometry` (`"128x40"`) and its own `fonts`.
 //! `--profile sh|mc|ssh` still has a built-in size when the file does not
@@ -19,8 +19,7 @@
 
 use crate::cli::{self, StartupGeometry};
 use crate::error::Error;
-use crate::fonts::{self, DEFAULT_FACE};
-use fontdue::Font;
+use crate::fonts;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -81,11 +80,9 @@ type Resolved = (Vec<FontSource>, Option<StartupGeometry>, f32, Vec<String>);
 
 #[derive(Debug)]
 pub(crate) struct Session {
-    pub(crate) fonts: Vec<Font>,
+    pub(crate) face: term_atlas::Face,
     pub(crate) geometry: Option<StartupGeometry>,
     pub(crate) font_size: f32,
-    /// The first face's family, used as the preferred family for fallback.
-    pub(crate) font_family: String,
     /// Program and arguments, or empty for the default login shell.
     pub(crate) command: Vec<String>,
 }
@@ -99,43 +96,21 @@ pub(crate) fn load(
     let parsed = read_config(explicit)?;
     let (sources, geometry, font_size, command) =
         resolve(&parsed, profile, explicit_geometry, explicit_command)?;
-    let fonts = load_paths(&sources)?;
-    let font_family = primary_family(&sources, &fonts);
+    let face = primary_face(&sources)?;
     Ok(Session {
-        fonts,
+        face,
         geometry,
         font_size,
-        font_family,
         command,
     })
 }
 
-fn load_paths(sources: &[FontSource]) -> Result<Vec<Font>, Error> {
-    if sources.is_empty() {
-        return Ok(vec![fonts::bundled_font(DEFAULT_FACE)?]);
+fn primary_face(sources: &[FontSource]) -> Result<term_atlas::Face, Error> {
+    match sources.first() {
+        None | Some(FontSource::Bundled(_)) => Ok(fonts::bundled()),
+        Some(FontSource::Family(name)) => fonts::family(name),
+        Some(FontSource::File(path)) => fonts::file(path),
     }
-    let mut loaded = Vec::with_capacity(sources.len());
-    for source in sources {
-        let font = match source {
-            FontSource::Bundled(name) => fonts::bundled_font(name)?,
-            FontSource::Family(family) => {
-                let Some((bytes, index)) = fonts::family_font(family) else {
-                    return Err(Error::Font(format!(
-                        "font family `{family}` is not installed"
-                    )));
-                };
-                fonts::font_from(&bytes, index, family)?
-            }
-            FontSource::File(path) => {
-                let bytes = std::fs::read(path).map_err(|err| {
-                    Error::Font(format!("failed to read {}: {err}", path.display()))
-                })?;
-                fonts::font_from(&bytes, 0, &path.display().to_string())?
-            }
-        };
-        loaded.push(font);
-    }
-    Ok(loaded)
 }
 
 fn read_config(explicit: Option<&Path>) -> Result<ParsedConfig, Error> {
@@ -235,20 +210,6 @@ fn profile_command(
             argv.extend(args.unwrap_or_default());
             Ok(argv)
         }
-    }
-}
-
-/// Family name to prefer for fallback. A bundled face has a fixed family;
-/// a configured family keeps its exact name, which fontique matches on.
-fn primary_family(sources: &[FontSource], fonts: &[Font]) -> String {
-    match sources.first() {
-        Some(FontSource::Bundled(_)) => fonts::MAPLE_FAMILY.to_owned(),
-        Some(FontSource::Family(name)) => name.clone(),
-        _ => fonts
-            .first()
-            .and_then(|font| font.name())
-            .unwrap_or(fonts::MAPLE_FAMILY)
-            .to_owned(),
     }
 }
 
@@ -401,10 +362,9 @@ mod tests {
     fn empty_config_keeps_the_bundled_font() {
         let path = std::env::temp_dir().join("uterm-empty-config");
         std::fs::write(&path, "# no fonts\n").unwrap();
-        let fonts = load(Some(&path), None, None, Vec::new()).unwrap().fonts;
+        let face = load(Some(&path), None, None, Vec::new()).unwrap().face;
         let _ = std::fs::remove_file(&path);
-        assert_eq!(fonts.len(), 1);
-        assert!(fonts[0].has_glyph('M'));
+        assert!(face.valid());
     }
 
     #[test]

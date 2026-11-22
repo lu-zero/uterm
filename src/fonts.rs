@@ -1,69 +1,51 @@
-//! Font faces: bundled defaults, installed families, and glyph fallback.
+//! Resolve config font entries into `term_atlas::Face`s.
 //!
-//! A `fonts` entry in the config is either the bundled keyword `default`, a
-//! file path, or an installed family name. `fontique` resolves
-//! family names and finds a system face when a codepoint is missing; fontdue
-//! rasterizes the bytes either way.
+//! The atlas owns rasterization, glyph caching and fallback (embedded CJK
+//! subsets plus installed system fonts), so this module only maps the config
+//! keywords to faces.
 
 use crate::error::Error;
-use fontdue::{Font, FontSettings};
-use fontique::{
-    Collection, CollectionOptions, FallbackKey, FontStyle, FontWeight, FontWidth, GenericFamily,
-    QueryFamily, QueryStatus, Script, SourceCache, SourceCacheOptions,
-};
-use std::cell::RefCell;
+use fontique::{Collection, CollectionOptions};
+use std::path::Path;
+use term_atlas::Face;
 
-/// The bundled face: Maple Mono NF, with Nerd Font icons and Latin/Cyrillic.
-pub(crate) const MAPLE_TTF: &[u8] = include_bytes!("../MapleMonoNF.ttf");
-/// The config keyword for the bundled face, whatever font it is.
+/// The config keyword for the face compiled into uterm.
 pub(crate) const DEFAULT_FACE: &str = "default";
-/// The family name fontique knows the current bundled face by.
-pub(crate) const MAPLE_FAMILY: &str = "Maple Mono NF";
 
-pub(crate) fn font_from(bytes: &[u8], index: u32, label: &str) -> Result<Font, Error> {
-    Font::from_bytes(
-        bytes,
-        FontSettings {
-            collection_index: index,
-            // We only rasterize single chars, never indexed substitutions.
-            load_substitutions: false,
-            ..FontSettings::default()
-        },
-    )
-    .map_err(|err| Error::Font(format!("failed to parse {label}: {err}")))
+pub(crate) fn bundled() -> Face {
+    Face::bundled()
 }
 
-pub(crate) fn bundled_font(name: &str) -> Result<Font, Error> {
-    if name != DEFAULT_FACE {
-        return Err(Error::Font(format!("unknown bundled font `{name}`")));
+pub(crate) fn family(name: &str) -> Result<Face, Error> {
+    // Face::load falls back to the bundled face for a missing family, which
+    // would silently ignore a typo in config.
+    let face = Face::load(name);
+    if face.family() != name {
+        return Err(Error::Font(format!(
+            "font family `{name}` is not installed"
+        )));
     }
-    font_from(MAPLE_TTF, 0, name)
+    Ok(face)
 }
 
-fn collection() -> Collection {
-    Collection::new(CollectionOptions {
+pub(crate) fn file(path: &Path) -> Result<Face, Error> {
+    let face = Face::from_file(path)
+        .map_err(|err| Error::Font(format!("failed to read {}: {err}", path.display())))?;
+    if !face.valid() {
+        return Err(Error::Font(format!(
+            "failed to parse {}: invalid font",
+            path.display()
+        )));
+    }
+    Ok(face)
+}
+
+/// Bundled keyword plus installed families, for `--list-fonts`.
+pub(crate) fn font_families() -> Vec<String> {
+    let mut collection = Collection::new(CollectionOptions {
         shared: false,
         system_fonts: true,
-    })
-}
-
-/// The regular face of an installed family, as font bytes and a TTC index.
-pub(crate) fn family_font(family: &str) -> Option<(Vec<u8>, u32)> {
-    let mut collection = collection();
-    let info = collection.family_by_name(family)?;
-    let font = info.match_font(
-        FontWidth::NORMAL,
-        FontStyle::Normal,
-        FontWeight::NORMAL,
-        false,
-    )?;
-    let blob = font.load(None)?;
-    Some((blob.as_ref().to_vec(), font.index()))
-}
-
-/// Installed families, sorted, with the bundled keyword first.
-pub(crate) fn font_families() -> Vec<String> {
-    let mut collection = collection();
+    });
     let mut families: Vec<String> = collection
         .family_names()
         .filter(|name| !name.starts_with('.'))
@@ -74,157 +56,17 @@ pub(crate) fn font_families() -> Vec<String> {
     families
 }
 
-thread_local! {
-    /// System-font enumeration is expensive; keep it for the event-loop thread.
-    static SYSTEM: RefCell<Option<(Collection, SourceCache)>> = const { RefCell::new(None) };
-}
-
-/// Candidate faces covering `ch`, in preference order: `primary_family`, then
-/// monospace, system UI and sans families, then the platform's script fallbacks.
-/// The caller tries each with fontdue, whose charmap can differ from fontique's.
-pub(crate) fn discover(primary_family: &str, ch: char) -> Vec<(Vec<u8>, u32)> {
-    SYSTEM.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let (collection, cache) = slot.get_or_insert_with(|| {
-            (
-                collection(),
-                SourceCache::new(SourceCacheOptions::default()),
-            )
-        });
-        let script = script_of(ch);
-        // Simplified and Traditional Chinese need script-specific hints;
-        // the generic Hani hint can miss simplified-only codepoints.
-        let mut scripts = vec![script];
-        if script == Script::from_bytes(*b"Hani") {
-            scripts.extend([Script::from_bytes(*b"Hans"), Script::from_bytes(*b"Hant")]);
-        }
-
-        let mut candidates = Vec::new();
-        for hint in scripts {
-            let mut query = collection.query(cache);
-            query.set_families([
-                QueryFamily::Named(primary_family),
-                QueryFamily::Generic(GenericFamily::Monospace),
-                QueryFamily::Generic(GenericFamily::SystemUi),
-                QueryFamily::Generic(GenericFamily::SansSerif),
-            ]);
-            query.set_fallbacks(FallbackKey::new(hint, None));
-            query.matches_with(|font| {
-                if candidates.len() >= 8 {
-                    return QueryStatus::Stop;
-                }
-                if font
-                    .charmap()
-                    .and_then(|charmap| charmap.map(ch))
-                    .is_some_and(|glyph| glyph != 0)
-                {
-                    candidates.push((font.blob.as_ref().to_vec(), font.index));
-                }
-                QueryStatus::Continue
-            });
-            drop(query);
-            if !candidates.is_empty() {
-                break;
-            }
-        }
-
-        // The script hint can miss a codepoint (e.g. simplified 码 under
-        // Hani). Fall back to scanning every installed face once.
-        if candidates.is_empty() {
-            let ids: Vec<_> = collection.family_ids().collect();
-            'families: for id in ids {
-                let Some(info) = collection.family(id) else {
-                    continue;
-                };
-                for font in info.fonts() {
-                    let Some(blob) = font.load(Some(cache)) else {
-                        continue;
-                    };
-                    if font
-                        .charmap_index()
-                        .charmap(blob.as_ref())
-                        .and_then(|charmap| charmap.map(ch))
-                        .is_some_and(|glyph| glyph != 0)
-                    {
-                        candidates.push((blob.as_ref().to_vec(), font.index()));
-                        if candidates.len() >= 8 {
-                            break 'families;
-                        }
-                    }
-                }
-            }
-        }
-        candidates
-    })
-}
-
-/// The script whose fallback families are most likely to cover `ch`. Fontique
-/// has no char-to-script routine; these are the blocks a terminal meets most.
-fn script_of(ch: char) -> Script {
-    let cp = u32::from(ch);
-    let tag = if (0x3040..=0x30FF).contains(&cp) {
-        *b"Kana"
-    } else if (0x4E00..=0x9FFF).contains(&cp) {
-        *b"Hani"
-    } else if (0xAC00..=0xD7AF).contains(&cp) {
-        *b"Hang"
-    } else if (0x0400..=0x052F).contains(&cp) {
-        *b"Cyrl"
-    } else if (0x0370..=0x03FF).contains(&cp) {
-        *b"Grek"
-    } else if (0x0590..=0x05FF).contains(&cp) {
-        *b"Hebr"
-    } else if (0x0600..=0x06FF).contains(&cp) {
-        *b"Arab"
-    } else if (0x0900..=0x097F).contains(&cp) {
-        *b"Deva"
-    } else if (0x0E00..=0x0E7F).contains(&cp) {
-        *b"Thai"
-    } else {
-        *b"Zyyy"
-    };
-    Script::from_bytes(tag)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn bundled_faces_load_and_have_their_expected_coverage() {
-        let maple = bundled_font(DEFAULT_FACE).unwrap();
-        assert!(maple.has_glyph('A'));
-        assert!(bundled_font("no such face").is_err());
+    fn bundled_face_is_valid() {
+        assert!(bundled().valid());
     }
 
     #[test]
-    fn discovery_finds_a_font_that_covers_the_codepoint() {
-        let candidates = discover(MAPLE_FAMILY, '日');
-        assert!(candidates.iter().any(|(bytes, index)| {
-            font_from(bytes, *index, "discovered")
-                .map(|face| face.has_glyph('日'))
-                .unwrap_or(false)
-        }));
-    }
-
-    #[test]
-    fn discovery_finds_codepoints_the_script_hint_misses() {
-        // 码 (U+7801) is simplified Chinese; the Hani hint can return nothing.
-        let candidates = discover(MAPLE_FAMILY, '码');
-        assert!(!candidates.is_empty());
-        assert!(candidates.iter().any(|(bytes, index)| {
-            font_from(bytes, *index, "discovered")
-                .map(|face| {
-                    let (metrics, bitmap) = face.rasterize('码', 18.0);
-                    metrics.width > 0 && bitmap.iter().any(|&a| a > 0)
-                })
-                .unwrap_or(false)
-        }));
-    }
-
-    #[test]
-    fn enumeration_starts_with_the_bundled_face() {
-        let families = font_families();
-        assert_eq!(families[0], DEFAULT_FACE);
+    fn missing_family_is_an_error() {
+        assert!(family("uterm no such family").is_err());
     }
 }

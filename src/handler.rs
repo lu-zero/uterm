@@ -5,13 +5,13 @@ use crate::error::Error;
 use crate::event::Listener;
 use crate::event::UiEvent;
 use crate::terminal::{cells_to_px, Tab};
-use fontdue::Font;
 use rio_vt::crosswords::grid::Scroll;
 use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
 use softbuffer::{Context, Surface};
 use std::borrow::Cow;
 use std::rc::Rc;
+use term_atlas::Face;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -23,9 +23,8 @@ pub(crate) struct Uterm {
     pub(crate) proxy: EventLoopProxy<UiEvent>,
     pub(crate) state: Option<AppState>,
     pub(crate) geometry: Option<StartupGeometry>,
-    pub(crate) fonts: Vec<Font>,
+    pub(crate) face: Option<Face>,
     pub(crate) font_size: f32,
-    pub(crate) font_family: String,
     pub(crate) command: Vec<String>,
     pub(crate) error: Option<Error>,
 }
@@ -52,16 +51,18 @@ impl Uterm {
         let clipboard = SystemClipboard::new(event_loop);
 
         // Build state first so real font metrics are available when the first tab is created.
-        let fonts = std::mem::take(&mut self.fonts);
+        let face = self
+            .face
+            .take()
+            .ok_or_else(|| Error::Font("no font configured".into()))?;
         let mut st = AppState::new(
             window,
             surface,
             Vec::new(),
             self.proxy.clone(),
             clipboard,
-            fonts,
+            face,
             self.font_size,
-            std::mem::take(&mut self.font_family),
             std::mem::take(&mut self.command),
         )?;
 

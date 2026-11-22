@@ -44,15 +44,15 @@ args = ["-d"]
 | field | meaning | default |
 | --- | --- | --- |
 | `geometry` | `"COLSxROWS"`, each side 1..=65535 | built-in size for `sh`/`mc`/`ssh`, otherwise none |
-| `fonts` | ordered fallback list; first face sets the cell size | top-level `fonts`, or `["default"]` |
+| `fonts` | primary face (first entry) sets the cell size | top-level `fonts`, or `["default"]` |
 | `font_size` | points, 4..=256 | top-level `font_size`, or 14 |
 | `command` | program to run instead of the login shell | none (login shell) |
 | `args` | arguments for `command` | `[]` |
 
 `default` is the keyword for the face compiled into uterm, so configs survive
 a font change. A bare `fonts` entry is an installed family name; a path needs
-a separator, a leading `.` or `~`, or a `.ttf`/`.otf`/`.ttc` extension. Glyphs
-that none of the configured faces cover are looked up in system fonts.
+a separator, a leading `.` or `~`, or a `.ttf`/`.otf`/`.ttc` extension. Glyphs the primary face lacks come from term-atlas's embedded CJK fallback
+tiers and installed system fonts.
 
 A custom profile may pick a name that has no built-in size; it then uses the
 default window size unless it sets `geometry`. An unknown name is an error.

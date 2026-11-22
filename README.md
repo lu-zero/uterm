@@ -52,14 +52,14 @@ cargo run -- --profile mc -- mc
 
 With no config file, uterm uses the bundled Maple Mono NF. When a glyph is missing, uterm looks it up in installed system fonts (preferring the primary family, then monospace, system UI, and script-specific fallbacks) and caches the face it finds. To control the faces yourself, create `~/.config/uterm/config.toml` (or `$XDG_CONFIG_HOME/uterm/config.toml`, or pass `--config PATH`, or set `$UTERM_CONFIG`).
 
-`fonts` is a fallback list: faces are tried in order, the first sets the cell size from the advance of `M`, and each later face supplies glyphs the earlier ones lack. Entries can be the bundled keyword `default`, an installed family name, or a path:
+The first `fonts` entry selects the primary face and sets the cell size. Entries can be the bundled keyword `default`, an installed family name, or a path:
 
 ```toml
 fonts = ["default", "Menlo", "/path/to/cjk.ttf"]
 font_size = 14
 ```
 
-`default` always means the face compiled into uterm, so configs survive a font change. A bare name is a family; a path needs a separator, a leading `.` or `~`, or a `.ttf`/`.otf`/`.ttc` extension. Paths may be absolute, relative to the config file, or `~/...`. An empty or missing `fonts` list is the same as `fonts = ["default"]`. `font_size` is in points and defaults to 14. Run `uterm --list-fonts` to see the bundled keyword and the installed font families. See `config.toml` for a fuller example.
+`default` always means the face compiled into uterm, so configs survive a font change. Glyphs the primary face lacks come from term-atlas's embedded CJK fallback tiers and installed system fonts. A bare name is a family; a path needs a separator, a leading `.` or `~`, or a `.ttf`/`.otf`/`.ttc` extension. Paths may be absolute, relative to the config file, or `~/...`. An empty or missing `fonts` list is the same as `fonts = ["default"]`. `font_size` is in points and defaults to 14. Run `uterm --list-fonts` to see the bundled keyword and the installed font families. See `config.toml` for a fuller example.
 
 ### Profiles
 
@@ -76,7 +76,7 @@ On Linux the `clipboard`, `x11` and `wayland` features are enabled by default (f
 Terminal route IDs are `Tab.id` values and are used for tab-exit routing (`UiEvent::TabExited(id)`). This is a small embedded-terminal app, so integer IDs are sufficient.
 
 - Renders cell fg/bg colors (and inverse) but not full text attributes (bold/italic/underline/strikethrough styling, cursor-shape-per-cell details beyond basics)
-- Wide characters occupy two cells in the grid and are drawn as one glyph in the first cell. A later face can supply the Japanese glyph; a bitmap wider than the cell continues into the next cell
+- Wide characters occupy two cells in the grid and are drawn as one cell sprite covering both cells
 - Basic local selection copy/paste and OSC 52 clipboard handling; no IME, xterm/kitty keyboard protocol, or clipboard popup on paste (plain `Ctrl+V` into terminal)
 - No scrollback UI and no rendered graphics protocols
 - Simple tab bar UI (titles and close buttons supported, but no tab reordering, dragging, or advanced widgets)
@@ -84,4 +84,4 @@ Terminal route IDs are `Tab.id` values and are used for tab-exit routing (`UiEve
 ## License
 
 - `uterm` source: [MIT](./LICENSE)
-- Maple Mono NF (bundled): [SIL Open Font License 1.1](./MapleMono-LICENSE.txt)
+- Bundled fonts (via `term-atlas`): SIL Open Font License 1.1, in the `term-font-data-*` crates

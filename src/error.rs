@@ -15,7 +15,6 @@ pub enum Error {
     Window(winit::error::OsError),
     Surface(softbuffer::SoftBufferError),
     Font(String),
-    FontMetrics(f32),
     Pty(std::io::Error),
     Machine(Box<dyn std::error::Error>),
 }
@@ -33,7 +32,6 @@ impl fmt::Display for Error {
             Error::Window(err) => write!(f, "failed to create the window: {err}"),
             Error::Surface(err) => write!(f, "failed to create the drawing surface: {err}"),
             Error::Font(err) => f.write_str(err),
-            Error::FontMetrics(px) => write!(f, "font has no horizontal metrics at {px}px"),
             Error::Pty(err) => write!(f, "failed to create the pty: {err}"),
             Error::Machine(err) => write!(f, "failed to start the terminal: {err}"),
         }

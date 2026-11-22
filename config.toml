@@ -4,9 +4,10 @@
 # Search order: --config, $UTERM_CONFIG, $XDG_CONFIG_HOME/uterm/config.toml,
 # ~/.config/uterm/config.toml. See docs/profiles.md for a full reference.
 
-# `fonts` is a fallback list: the first face sets the cell size from `M`, and
-# each later face adds glyphs the earlier ones lack. Entries are the bundled
-# keyword `default`, an installed family name, or a path. `default` follows
+# The first `fonts` entry is the primary face and sets the cell size. Entries
+# are the bundled keyword `default`, an installed family name, or a path.
+# Missing glyphs come from embedded CJK fallback tiers and system fonts.
+# `default` follows
 # the bundled face if it changes. Paths are absolute, relative to this file,
 # or ~/... . A bare name is a family, so a real file named default is written
 # as ./default. An empty or missing `fonts` list keeps the bundled face.
