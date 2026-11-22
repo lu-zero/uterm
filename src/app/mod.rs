@@ -163,8 +163,16 @@ impl AppState {
         Ok(())
     }
 
+    fn set_resize_lock(&mut self, locked: bool) {
+        self.geometry_locked = locked;
+        // Lock the window as well as the grid; otherwise dragging the window
+        // still fires Resized events and changes the terminal behind the lock.
+        self.window.set_resizable(!locked);
+    }
+
     pub(crate) fn lock_toggle(&mut self) {
-        self.geometry_locked = !self.geometry_locked;
+        let locked = !self.geometry_locked;
+        self.set_resize_lock(locked);
     }
 
     /// Spawn a fresh, independent uterm window/process, inheriting our CLI args
@@ -184,7 +192,7 @@ impl AppState {
     pub(crate) fn apply_preset(&mut self, direction: i32) -> Result<(), Error> {
         let len = PRESET_SIZES.len() as i32;
         self.preset_index = (self.preset_index as i32 + direction).rem_euclid(len) as usize;
-        self.geometry_locked = false;
+        self.set_resize_lock(false);
         let (cols, rows) = PRESET_SIZES[self.preset_index];
         let rows_with_bar = rows.checked_add(1).ok_or(Error::GridSize { cols, rows })?;
         let width = cells_to_px(cols, self.cell_w, cols, rows)?;
