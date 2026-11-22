@@ -1,36 +1,42 @@
-//! One source for the shortcut list: rendered by winnow-args in `--help` and
-//! drawn in the terminal when Ctrl+Shift+H is pressed.
+//! The default key map: one declaration drives `--help`, the in-terminal
+//! overlay, and (later) config overrides.
 //!
-//! The file uses winnow-args markup (`code` and *emphasis*), which the overlay
-//! strips before drawing.
-
-/// Help text with winnow-args markup, used as the CLI's `after_help`.
-pub(crate) const HELP: &str = include_str!("../keybindings.txt");
+//! Entries are `keys -> action`. winnow-args markup is added only when the
+//! help string is generated; the overlay reads the plain fields.
 
 pub(crate) struct Binding {
-    pub(crate) keys: String,
-    pub(crate) action: String,
+    pub(crate) keys: &'static str,
+    pub(crate) action: &'static str,
 }
 
-pub(crate) fn bindings() -> Vec<Binding> {
-    HELP.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| {
-            let (keys, action) = line.split_once("  ")?;
-            Some(Binding {
-                keys: strip(keys),
-                action: strip(action),
-            })
-        })
-        .collect()
+macro_rules! bindings {
+    ($(($keys:literal, $action:literal)),+ $(,)?) => {
+        pub(crate) const BINDINGS: &[Binding] = &[
+            $(Binding { keys: $keys, action: $action }),+
+        ];
+        /// Help text with winnow-args markup, used as the CLI's `after_help`.
+        pub(crate) const HELP: &str = concat!(
+            $(concat!("`", $keys, "`  *", $action, "*\n")),+
+        );
+    };
 }
 
-fn strip(text: &str) -> String {
-    let text = text.trim();
-    let text = text.strip_prefix('`').unwrap_or(text);
-    let text = text.strip_suffix('`').unwrap_or(text);
-    let text = text.strip_prefix('*').unwrap_or(text);
-    text.strip_suffix('*').unwrap_or(text).to_owned()
+bindings!(
+    ("Ctrl+Shift+T", "new tab"),
+    ("Ctrl+Shift+W", "close active tab"),
+    ("Ctrl+Tab / Ctrl+PageDown", "next tab"),
+    ("Ctrl+Shift+Tab / Ctrl+PageUp", "previous tab"),
+    ("Cmd+C / Cmd+V / Cmd+N", "copy / paste / new window (macOS)"),
+    ("Ctrl+Shift+C / V / N", "copy / paste / new window (Linux)"),
+    ("Ctrl+Shift+= / -", "cycle preset sizes"),
+    ("Alt+Enter", "toggle resize lock"),
+    ("Ctrl+Shift+H", "show this help"),
+    ("Mouse click on tab", "switch tab"),
+    ("Mouse click on ×", "close tab"),
+);
+
+pub(crate) fn bindings() -> impl Iterator<Item = &'static Binding> {
+    BINDINGS.iter()
 }
 
 #[cfg(test)]
@@ -38,12 +44,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bindings_match_the_help_text() {
-        let items = bindings();
-        assert_eq!(items.len(), HELP.lines().count());
-        assert!(items.iter().any(|b| b.keys == "Ctrl+Shift+H"));
-        assert!(items
-            .iter()
-            .all(|b| !b.keys.contains('`') && !b.action.contains('*')));
+    fn help_is_generated_from_the_binding_map() {
+        assert_eq!(bindings().count(), BINDINGS.len());
+        for binding in bindings() {
+            assert!(HELP.contains(&format!("`{}`  *{}*", binding.keys, binding.action)));
+        }
+        assert_eq!(HELP.lines().count(), BINDINGS.len());
     }
 }

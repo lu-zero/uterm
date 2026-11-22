@@ -170,7 +170,7 @@ impl AppState {
                 need(ch, 1);
             }
         }
-        let key_help: Vec<(String, String)> = if self.key_help {
+        let key_help: Vec<(&str, &str)> = if self.key_help {
             crate::keybindings::bindings()
                 .into_iter()
                 .map(|binding| (binding.keys, binding.action))
