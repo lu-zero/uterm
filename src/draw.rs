@@ -201,6 +201,7 @@ fn pixel_index(bw: usize, x: usize, y: usize) -> Option<usize> {
     y.checked_mul(bw)?.checked_add(x)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fill_rect(
     buf: &mut [u32],
     bw: usize,
@@ -224,6 +225,7 @@ pub(crate) fn fill_rect(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fill_rect_alpha(
     buf: &mut [u32],
     bw: usize,
@@ -268,6 +270,7 @@ pub(crate) fn blend(dst: u32, src: u32, a: u32, ia: u32) -> u32 {
 ///
 /// The gray atlas is one coverage byte per pixel; the color atlas holds
 /// premultiplied ARGB8888 bytes when `PixelFormat::Argb` is selected.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn blit_atlas(
     buf: &mut [u32],
     bw: usize,
@@ -281,6 +284,7 @@ pub(crate) fn blit_atlas(
     blit_atlas_impl(buf, bw, bh, atlas, rect, x0, y0, color, 0.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn blit_atlas_sheared(
     buf: &mut [u32],
     bw: usize,
@@ -295,6 +299,7 @@ pub(crate) fn blit_atlas_sheared(
     blit_atlas_impl(buf, bw, bh, atlas, rect, x0, y0, color, shear);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blit_atlas_impl(
     buf: &mut [u32],
     bw: usize,

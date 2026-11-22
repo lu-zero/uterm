@@ -114,6 +114,7 @@ fn atlas_for(face: &Face, font_size: f32, scale: f64) -> Atlas {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         window: Rc<Window>,
         surface: Surface<Rc<Window>, Rc<Window>>,
