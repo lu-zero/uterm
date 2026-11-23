@@ -376,6 +376,17 @@ fn cursor_key_bytes(key: NamedKey, app_cursor: bool, modifiers: Modifiers) -> Op
     })
 }
 
+/// CSI sequences for the edit keys, as xterm-256color defines them.
+fn edit_key_bytes(key: NamedKey) -> Option<&'static [u8]> {
+    match key {
+        NamedKey::Insert => Some(b"\x1b[2~"),
+        NamedKey::Delete => Some(b"\x1b[3~"),
+        NamedKey::PageUp => Some(b"\x1b[5~"),
+        NamedKey::PageDown => Some(b"\x1b[6~"),
+        _ => None,
+    }
+}
+
 pub(crate) fn key_to_bytes(
     k: &winit::event::KeyEvent,
     modifiers: Modifiers,
@@ -450,9 +461,7 @@ pub(crate) fn key_to_bytes(
             | NamedKey::Home
             | NamedKey::End),
         ) => cursor_key_bytes(*named, app_cursor, modifiers),
-        Key::Named(NamedKey::PageUp) => Some(b"\x1b[5~".to_vec()),
-        Key::Named(NamedKey::PageDown) => Some(b"\x1b[6~".to_vec()),
-        Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
+        Key::Named(named) => edit_key_bytes(*named).map(|bytes| bytes.to_vec()),
         _ => None,
     }
 }
@@ -460,8 +469,8 @@ pub(crate) fn key_to_bytes(
 #[cfg(test)]
 mod tests {
     use super::{
-        cursor_key_bytes, encode_mouse_report, function_key_bytes, function_key_index,
-        motion_button,
+        cursor_key_bytes, edit_key_bytes, encode_mouse_report, function_key_bytes,
+        function_key_index, motion_button,
     };
     use winit::event::Modifiers;
     use winit::keyboard::{ModifiersState, NamedKey};
@@ -491,6 +500,15 @@ mod tests {
             Some(&b"\x1b[1;2A"[..])
         );
         assert!(cursor_key_bytes(NamedKey::Enter, true, none).is_none());
+    }
+
+    #[test]
+    fn edit_keys_send_xterm_sequences() {
+        assert_eq!(edit_key_bytes(NamedKey::Insert), Some(&b"\x1b[2~"[..]));
+        assert_eq!(edit_key_bytes(NamedKey::Delete), Some(&b"\x1b[3~"[..]));
+        assert_eq!(edit_key_bytes(NamedKey::PageUp), Some(&b"\x1b[5~"[..]));
+        assert_eq!(edit_key_bytes(NamedKey::PageDown), Some(&b"\x1b[6~"[..]));
+        assert_eq!(edit_key_bytes(NamedKey::Enter), None);
     }
 
     #[test]
