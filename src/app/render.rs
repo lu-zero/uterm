@@ -13,6 +13,11 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use term_atlas::GlyphRect;
 
+/// Control characters (including tab) occupy a cell but have no glyph.
+fn cell_has_glyph(ch: char, cells: u8) -> bool {
+    cells > 0 && !ch.is_control() && ch != ' '
+}
+
 pub(crate) struct CellRender {
     ch: char,
     /// Base code point plus combining marks / variation selectors, only when present.
@@ -186,7 +191,7 @@ impl AppState {
         let mut cell_rects = std::mem::take(&mut self.cell_rects);
         cell_rects.clear();
         cell_rects.extend(cells.iter().map(|cell| {
-            if cell.cells == 0 || cell.ch == '\0' || cell.ch == ' ' {
+            if !cell_has_glyph(cell.ch, cell.cells) {
                 None
             } else if let Some(text) = &cell.cluster {
                 self.atlas.ensure_str(text, cell.cells)
@@ -620,6 +625,19 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use super::cell_has_glyph;
+
+    #[test]
+    fn control_characters_have_no_glyph() {
+        assert!(!cell_has_glyph('\t', 1));
+        assert!(!cell_has_glyph('\0', 1));
+        assert!(!cell_has_glyph('\u{1b}', 1));
+        assert!(!cell_has_glyph(' ', 1));
+        assert!(!cell_has_glyph('A', 0));
+        assert!(cell_has_glyph('A', 1));
+        assert!(cell_has_glyph('日', 2));
+    }
+
     fn atlas() -> term_atlas::Atlas {
         term_atlas::Atlas::with_face_format(
             term_atlas::Face::bundled(),

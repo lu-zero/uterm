@@ -60,6 +60,19 @@ pub(crate) fn cells_to_px(
         .ok_or(Error::GridSize { cols, rows })
 }
 
+/// Terminal identity advertised to applications in the PTY.
+///
+/// `xterm-256color` is present on essentially every Unix system and matches
+/// the colours, mouse protocols and bracketed paste uterm implements. The
+/// login-shell path on macOS otherwise sets `TERM=rio`, whose terminfo is not
+/// installed here; the explicit `-- command` path sets no TERM at all.
+fn child_env() -> Vec<(String, String)> {
+    vec![
+        ("TERM".to_owned(), "xterm-256color".to_owned()),
+        ("COLORTERM".to_owned(), "truecolor".to_owned()),
+    ]
+}
+
 impl Tab {
     pub(crate) fn new(
         id: usize,
@@ -92,7 +105,7 @@ impl Tab {
             program,
             args,
             &cwd,
-            None,
+            Some(child_env()),
             cols_u16,
             rows_u16,
             winsize_px(cols_u16, cell_w),
@@ -137,5 +150,18 @@ impl Tab {
             height: winsize_px(rows_u16, cell_h),
         }));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_gets_a_usable_term() {
+        let env = child_env();
+        assert!(env
+            .iter()
+            .any(|(key, value)| key == "TERM" && !value.is_empty()));
     }
 }
