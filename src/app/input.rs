@@ -7,7 +7,7 @@ use rio_vt::selection::{Selection, SelectionType};
 use std::borrow::Cow;
 use winit::event::{ElementState, Modifiers, MouseButton};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, KeyLocation, NamedKey, PhysicalKey};
 
 impl AppState {
     pub(crate) fn terminal_cell_at(&self, x: f64, y: f64) -> Option<(usize, usize, Side)> {
@@ -289,7 +289,7 @@ pub(crate) fn ctrl_char(ch: char) -> Option<u8> {
     }
 }
 
-/// Number of a top-row function key, `1` for F1 through `12` for F12.
+/// Number of a top-row function key, `1` for F1 through `24` for F24.
 fn function_key_index(key: NamedKey) -> Option<u8> {
     Some(match key {
         NamedKey::F1 => 1,
@@ -304,18 +304,36 @@ fn function_key_index(key: NamedKey) -> Option<u8> {
         NamedKey::F10 => 10,
         NamedKey::F11 => 11,
         NamedKey::F12 => 12,
+        NamedKey::F13 => 13,
+        NamedKey::F14 => 14,
+        NamedKey::F15 => 15,
+        NamedKey::F16 => 16,
+        NamedKey::F17 => 17,
+        NamedKey::F18 => 18,
+        NamedKey::F19 => 19,
+        NamedKey::F20 => 20,
+        NamedKey::F21 => 21,
+        NamedKey::F22 => 22,
+        NamedKey::F23 => 23,
+        NamedKey::F24 => 24,
         _ => return None,
     })
 }
 
-/// Bytes for F1–F12 as `xterm-256color` and `rio` list them (`kf1`–`kf63`).
+/// Bytes for F1–F24 as `xterm-256color` and `rio` list them (`kf1`–`kf63`).
 ///
 /// Unmodified F1–F4 are SS3 (`\EOP`…`\EOS`). F5–F12 are CSI, skipping 16 and
 /// 22 (`\E[15~`, `\E[17~`, …, `\E[24~`). A modifier uses the xterm parameter
 /// (2 shift, 3 alt, 4 both, 5 ctrl, and the combinations of those): `\E[1;{mod}P`
-/// for F1–F4 and `\E[{code};{mod}~` for F5–F12. Midnight Commander reads these
-/// from terminfo after it turns the keypad on.
+/// for F1–F4 and `\E[{code};{mod}~` for F5–F12. xterm sends F13–F24 as shifted
+/// F1–F12, so their parameter always includes shift; other modifiers add to it.
+/// Midnight Commander reads these from terminfo after it turns the keypad on.
 fn function_key_bytes(n: u8, shift: bool, alt: bool, ctrl: bool) -> Option<Vec<u8>> {
+    let (n, shift) = if (13..=24).contains(&n) {
+        (n - 12, true)
+    } else {
+        (n, shift)
+    };
     let (ss3, code) = match n {
         1 => (b'P', 0),
         2 => (b'Q', 0),
@@ -376,21 +394,60 @@ fn cursor_key_bytes(key: NamedKey, app_cursor: bool, modifiers: Modifiers) -> Op
     })
 }
 
-/// CSI sequences for the edit keys, as xterm-256color defines them.
-fn edit_key_bytes(key: NamedKey) -> Option<&'static [u8]> {
-    match key {
-        NamedKey::Insert => Some(b"\x1b[2~"),
-        NamedKey::Delete => Some(b"\x1b[3~"),
-        NamedKey::PageUp => Some(b"\x1b[5~"),
-        NamedKey::PageDown => Some(b"\x1b[6~"),
-        _ => None,
-    }
+/// CSI sequences for the edit keys, as xterm-256color defines them. With a
+/// modifier held, xterm uses `CSI n;m~` with the 1-based modifier parameter.
+fn edit_key_bytes(key: NamedKey, modifiers: Modifiers) -> Option<Vec<u8>> {
+    let number = match key {
+        NamedKey::Insert => 2,
+        NamedKey::Delete => 3,
+        NamedKey::PageUp => 5,
+        NamedKey::PageDown => 6,
+        _ => return None,
+    };
+    let param = modifier_param(modifiers.state());
+    Some(if param == 1 {
+        format!("\x1b[{number}~").into_bytes()
+    } else {
+        format!("\x1b[{number};{param}~").into_bytes()
+    })
+}
+
+/// xterm's 1-based modifier parameter: shift=1, alt=2, ctrl=4, super=8.
+fn modifier_param(state: winit::keyboard::ModifiersState) -> u8 {
+    1 + u8::from(state.shift_key())
+        + 2 * u8::from(state.alt_key())
+        + 4 * u8::from(state.control_key())
+        + 8 * u8::from(state.meta_key())
+}
+
+/// Kitty's private-use code for keys with no legacy escape sequence. Kitty
+/// sends these as `CSI {code} u` even when the keyboard protocol is off, so an
+/// application that does not speak it still sees the keypress.
+fn named_key_code(key: NamedKey) -> Option<u32> {
+    Some(match key {
+        NamedKey::ScrollLock => 57359,
+        NamedKey::NumLock => 57360,
+        NamedKey::PrintScreen => 57361,
+        NamedKey::Pause => 57362,
+        NamedKey::ContextMenu => 57363,
+        NamedKey::MediaPlay => 57428,
+        NamedKey::MediaPause => 57429,
+        NamedKey::MediaPlayPause => 57430,
+        NamedKey::MediaStop => 57432,
+        NamedKey::MediaTrackNext => 57435,
+        NamedKey::MediaTrackPrevious => 57436,
+        NamedKey::AudioVolumeDown => 57438,
+        NamedKey::AudioVolumeMute => 57440,
+        NamedKey::AudioVolumeUp => 57439,
+        _ => return None,
+    })
 }
 
 pub(crate) fn key_to_bytes(
     k: &winit::event::KeyEvent,
     modifiers: Modifiers,
     app_cursor: bool,
+    app_keypad: bool,
 ) -> Option<Vec<u8>> {
     let ctrl = modifiers.state().control_key();
     let alt = modifiers.state().alt_key();
@@ -416,6 +473,15 @@ pub(crate) fn key_to_bytes(
         }
     }
     match &k.logical_key {
+        // The numpad comma has no SS3 form; kitty's KP_SEPARATOR is used even
+        // in legacy mode. macOS delivers it as text, others as a named key.
+        Key::Character(s)
+            if s.as_str() == ","
+                && (k.location == KeyLocation::Numpad
+                    || k.physical_key == PhysicalKey::Code(KeyCode::NumpadComma)) =>
+        {
+            Some(b"\x1b[57416u".to_vec())
+        }
         Key::Character(s) => {
             if !ctrl && !alt {
                 if let Some(text) = &k.text {
@@ -447,10 +513,29 @@ pub(crate) fn key_to_bytes(
                 Some(b)
             }
         }
+        // The numpad Enter is only distinguishable by its location. In
+        // application keypad mode xterm sends SS3 M (`kent`); outside it,
+        // Enter types CR like the main key.
+        Key::Named(NamedKey::Enter) if app_keypad && k.location == KeyLocation::Numpad => {
+            let param = modifier_param(modifiers.state());
+            Some(if param == 1 {
+                b"\x1bOM".to_vec()
+            } else {
+                format!("\x1bO{param}M").into_bytes()
+            })
+        }
         Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
+        // DEL for plain Backspace, as xterm and ghostty send it; readline
+        // expects it. Ctrl+Backspace is ^H so shells can bind it separately.
         Key::Named(NamedKey::Backspace) => Some(if ctrl { vec![0x08] } else { vec![0x7f] }),
-        Key::Named(NamedKey::Tab) => Some(b"\t".to_vec()),
+        Key::Named(NamedKey::Tab) => Some(if modifiers.state().shift_key() {
+            b"\x1b[Z".to_vec()
+        } else {
+            b"\t".to_vec()
+        }),
         Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
+        // xterm's "Begin" (`kb2`) is the numpad Clear key on many keyboards.
+        Key::Named(NamedKey::Clear) => Some(b"\x1bOE".to_vec()),
         // Space is `Key::Character(" ")` since winit 0.31; the generic
         // `Character` arm above produces the same bytes as the old branch.
         Key::Named(
@@ -461,7 +546,10 @@ pub(crate) fn key_to_bytes(
             | NamedKey::Home
             | NamedKey::End),
         ) => cursor_key_bytes(*named, app_cursor, modifiers),
-        Key::Named(named) => edit_key_bytes(*named).map(|bytes| bytes.to_vec()),
+        Key::Named(named) => match named_key_code(*named) {
+            Some(code) => Some(format!("\x1b[{code}u").into_bytes()),
+            None => edit_key_bytes(*named, modifiers),
+        },
         _ => None,
     }
 }
@@ -470,10 +558,25 @@ pub(crate) fn key_to_bytes(
 mod tests {
     use super::{
         cursor_key_bytes, edit_key_bytes, encode_mouse_report, function_key_bytes,
-        function_key_index, motion_button,
+        function_key_index, key_to_bytes, motion_button, named_key_code,
     };
-    use winit::event::Modifiers;
-    use winit::keyboard::{ModifiersState, NamedKey};
+    use winit::event::{ElementState, KeyEvent, Modifiers};
+    use winit::keyboard::{
+        Key, KeyCode, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
+    };
+
+    fn key_event(logical: Key, location: KeyLocation) -> KeyEvent {
+        KeyEvent {
+            physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+            logical_key: logical.clone(),
+            text: None,
+            location,
+            state: ElementState::Pressed,
+            repeat: false,
+            text_with_all_modifiers: None,
+            key_without_modifiers: logical.clone(),
+        }
+    }
 
     #[test]
     fn cursor_keys_follow_application_cursor_mode() {
@@ -504,11 +607,134 @@ mod tests {
 
     #[test]
     fn edit_keys_send_xterm_sequences() {
-        assert_eq!(edit_key_bytes(NamedKey::Insert), Some(&b"\x1b[2~"[..]));
-        assert_eq!(edit_key_bytes(NamedKey::Delete), Some(&b"\x1b[3~"[..]));
-        assert_eq!(edit_key_bytes(NamedKey::PageUp), Some(&b"\x1b[5~"[..]));
-        assert_eq!(edit_key_bytes(NamedKey::PageDown), Some(&b"\x1b[6~"[..]));
-        assert_eq!(edit_key_bytes(NamedKey::Enter), None);
+        let none = Modifiers::from(ModifiersState::empty());
+        assert_eq!(
+            edit_key_bytes(NamedKey::Insert, none).as_deref(),
+            Some(&b"\x1b[2~"[..])
+        );
+        assert_eq!(
+            edit_key_bytes(NamedKey::Delete, none).as_deref(),
+            Some(&b"\x1b[3~"[..])
+        );
+        assert_eq!(
+            edit_key_bytes(NamedKey::PageUp, none).as_deref(),
+            Some(&b"\x1b[5~"[..])
+        );
+        assert_eq!(
+            edit_key_bytes(NamedKey::PageDown, none).as_deref(),
+            Some(&b"\x1b[6~"[..])
+        );
+        assert_eq!(edit_key_bytes(NamedKey::Enter, none), None);
+
+        let shift = Modifiers::from(ModifiersState::SHIFT);
+        assert_eq!(
+            edit_key_bytes(NamedKey::Insert, shift).as_deref(),
+            Some(&b"\x1b[2;2~"[..])
+        );
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert_eq!(
+            edit_key_bytes(NamedKey::PageDown, ctrl).as_deref(),
+            Some(&b"\x1b[6;5~"[..])
+        );
+    }
+
+    #[test]
+    fn shift_tab_sends_back_tab() {
+        let none = Modifiers::from(ModifiersState::empty());
+        let shift = Modifiers::from(ModifiersState::SHIFT);
+        let tab = key_event(Key::Named(NamedKey::Tab), KeyLocation::Standard);
+        assert_eq!(
+            key_to_bytes(&tab, none, false, false).as_deref(),
+            Some(&b"\t"[..])
+        );
+        assert_eq!(
+            key_to_bytes(&tab, shift, false, false).as_deref(),
+            Some(&b"\x1b[Z"[..])
+        );
+    }
+
+    #[test]
+    fn numpad_enter_is_ss3_only_in_application_keypad_mode() {
+        let none = Modifiers::from(ModifiersState::empty());
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        let enter = key_event(Key::Named(NamedKey::Enter), KeyLocation::Numpad);
+        assert_eq!(
+            key_to_bytes(&enter, none, false, false).as_deref(),
+            Some(&b"\r"[..])
+        );
+        assert_eq!(
+            key_to_bytes(&enter, none, false, true).as_deref(),
+            Some(&b"\x1bOM"[..])
+        );
+        assert_eq!(
+            key_to_bytes(&enter, ctrl, false, true).as_deref(),
+            Some(&b"\x1bO5M"[..])
+        );
+        let main = key_event(Key::Named(NamedKey::Enter), KeyLocation::Standard);
+        assert_eq!(
+            key_to_bytes(&main, none, false, true).as_deref(),
+            Some(&b"\r"[..])
+        );
+    }
+
+    #[test]
+    fn clear_sends_xterm_begin_and_backspace_stays_del() {
+        let none = Modifiers::from(ModifiersState::empty());
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        let clear = key_event(Key::Named(NamedKey::Clear), KeyLocation::Numpad);
+        assert_eq!(
+            key_to_bytes(&clear, none, false, false).as_deref(),
+            Some(&b"\x1bOE"[..])
+        );
+        let backspace = key_event(Key::Named(NamedKey::Backspace), KeyLocation::Standard);
+        assert_eq!(
+            key_to_bytes(&backspace, none, false, false).as_deref(),
+            Some(&b"\x7f"[..])
+        );
+        assert_eq!(
+            key_to_bytes(&backspace, ctrl, false, false).as_deref(),
+            Some(&b"\x08"[..])
+        );
+    }
+
+    #[test]
+    fn keys_without_a_legacy_form_send_their_kitty_code() {
+        let none = Modifiers::from(ModifiersState::empty());
+        for (named, code) in [
+            (NamedKey::ScrollLock, 57359),
+            (NamedKey::NumLock, 57360),
+            (NamedKey::PrintScreen, 57361),
+            (NamedKey::Pause, 57362),
+            (NamedKey::ContextMenu, 57363),
+            (NamedKey::MediaPlayPause, 57430),
+            (NamedKey::MediaStop, 57432),
+            (NamedKey::MediaTrackNext, 57435),
+            (NamedKey::MediaTrackPrevious, 57436),
+            (NamedKey::AudioVolumeDown, 57438),
+            (NamedKey::AudioVolumeMute, 57440),
+            (NamedKey::AudioVolumeUp, 57439),
+        ] {
+            assert_eq!(named_key_code(named), Some(code), "{named:?}");
+            let event = key_event(Key::Named(named), KeyLocation::Standard);
+            let expected = format!("\x1b[{code}u").into_bytes();
+            assert_eq!(
+                key_to_bytes(&event, none, false, false).as_deref(),
+                Some(expected.as_slice()),
+                "{named:?}"
+            );
+        }
+        // Numpad comma is text on macOS and a named key elsewhere.
+        let comma = key_event(Key::Character(",".into()), KeyLocation::Numpad);
+        assert_eq!(
+            key_to_bytes(&comma, none, false, false).as_deref(),
+            Some(&b"\x1b[57416u"[..])
+        );
+        let mut physical_comma = key_event(Key::Character(",".into()), KeyLocation::Standard);
+        physical_comma.physical_key = PhysicalKey::Code(KeyCode::NumpadComma);
+        assert_eq!(
+            key_to_bytes(&physical_comma, none, false, false).as_deref(),
+            Some(&b"\x1b[57416u"[..])
+        );
     }
 
     #[test]
@@ -613,6 +839,27 @@ mod tests {
         );
 
         assert!(function_key_bytes(0, false, false, false).is_none());
-        assert!(function_key_bytes(13, false, false, false).is_none());
+        assert!(function_key_bytes(25, false, false, false).is_none());
+
+        // F13-F24 are xterm's shifted F1-F12, with extra modifiers added to
+        // the same parameter (kf37 and kf49-equivalent forms).
+        assert_eq!(function_key_index(NamedKey::F13), Some(13));
+        assert_eq!(function_key_index(NamedKey::F24), Some(24));
+        assert_eq!(
+            function_key_bytes(13, false, false, false).as_deref(),
+            Some(&b"\x1b[1;2P"[..])
+        );
+        assert_eq!(
+            function_key_bytes(17, false, false, false).as_deref(),
+            Some(&b"\x1b[15;2~"[..])
+        );
+        assert_eq!(
+            function_key_bytes(13, false, false, true).as_deref(),
+            Some(&b"\x1b[1;6P"[..])
+        );
+        assert_eq!(
+            function_key_bytes(24, false, false, false).as_deref(),
+            Some(&b"\x1b[24;2~"[..])
+        );
     }
 }

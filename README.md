@@ -18,8 +18,8 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - OSC 52 clipboard store/load integration (terminal apps can set/read clipboard via escape sequences, routed per tab)
 - Basic mouse reporting to the terminal (SGR/UTF-8 modes) for button, motion/drag, and wheel events when enabled by applications
 - Custom launch size via `--geometry WxH` (cells) or `--profile NAME` (`sh`, `mc`, `ssh`, or a profile in `config.toml`); an explicit geometry wins over a profile
-- Words after `--` are run as a command instead of the login shell, in every tab
-- New window via `Ctrl+Shift+N` (spawns an independent uterm process with the same arguments), preset sizes via `Ctrl+Shift+=`/`-`, and a transient `cols x rows` overlay during resizing
+- Words after `--` run a command instead of the login shell in the initial window's first tab; new tabs and windows start a shell
+- New window via `Ctrl+Shift+N` (spawns an independent uterm process with the same CLI options but without the startup command), preset sizes via `Ctrl+Shift+=`/`-`, and a transient `cols x rows` overlay during resizing
 
 ### Keybindings
 

@@ -84,8 +84,8 @@ pub(crate) struct AppState {
     pub(crate) rows: Vec<Row<Square>>,
     pub(crate) cells: Vec<render::CellRender>,
     pub(crate) cell_rects: Vec<Option<GlyphRect>>,
-    /// Command from `--`, used for every tab instead of the default shell.
-    pub(crate) command: Vec<String>,
+    /// Raw CLI options a new window inherits; the `--` command is not included.
+    pub(crate) window_args: Vec<String>,
     /// Point size from the config, before DPI scaling.
     pub(crate) font_size: f32,
     pub(crate) cell_w: usize,
@@ -123,7 +123,7 @@ impl AppState {
         clipboard: SystemClipboard,
         face: Face,
         font_size: f32,
-        command: Vec<String>,
+        window_args: Vec<String>,
     ) -> Result<Self, Error> {
         if !face.valid() {
             return Err(Error::Font("no usable font configured".to_string()));
@@ -142,7 +142,7 @@ impl AppState {
             rows: Vec::new(),
             cells: Vec::new(),
             cell_rects: Vec::new(),
-            command,
+            window_args,
             font_size,
             cell_w,
             cell_h,
@@ -231,14 +231,14 @@ impl AppState {
         self.set_resize_lock(locked);
     }
 
-    /// Spawn a fresh, independent uterm window/process, inheriting our CLI args
-    /// so it opens with the same geometry/profile.
+    /// Spawn a fresh, independent uterm window/process with the same CLI
+    /// options but no startup command, so it opens a shell.
     pub(crate) fn spawn_new_window(&self) {
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
         let mut cmd = std::process::Command::new(exe);
-        cmd.args(std::env::args().skip(1));
+        cmd.args(&self.window_args);
         if let Err(err) = cmd.spawn() {
             eprintln!("uterm: failed to spawn a new window: {err}");
         }

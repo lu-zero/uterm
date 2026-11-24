@@ -64,6 +64,10 @@ impl Uterm {
             .face
             .take()
             .ok_or_else(|| Error::Font("no font configured".into()))?;
+        // Only the initial tab runs the startup command; new windows inherit
+        // the CLI options but start with the default shell.
+        let command = std::mem::take(&mut self.command);
+        let window_args = crate::cli::new_window_args();
         let mut st = AppState::new(
             window,
             surface,
@@ -72,7 +76,7 @@ impl Uterm {
             clipboard,
             face,
             self.font_size,
-            std::mem::take(&mut self.command),
+            window_args,
         )?;
 
         let (cols, rows) = if let Some(g) = self.geometry {
@@ -97,7 +101,7 @@ impl Uterm {
             st.cell_w,
             st.cell_h,
             st.listener.clone(),
-            &st.command,
+            &command,
         )?;
         st.tabs.push(first);
 
@@ -312,6 +316,12 @@ impl ApplicationHandler for Uterm {
                 }
                 let mods = st.modifiers.state();
                 if let Some(action) = crate::keybindings::lookup_key(mods, &k.logical_key) {
+                    if std::env::var_os("UTERM_KEY_DEBUG").is_some() {
+                        eprintln!(
+                            "binding {:?} for {:?} (mods={mods:?})",
+                            action, k.logical_key
+                        );
+                    }
                     // A held new-window shortcut must not spawn a process per repeat.
                     if action == crate::keybindings::Action::NewWindow && k.repeat {
                         return;
@@ -324,15 +334,21 @@ impl ApplicationHandler for Uterm {
                     return;
                 }
 
-                let app_cursor = st
+                let (app_cursor, app_keypad) = st
                     .tabs
                     .get(st.active)
-                    .map(|tab| tab.terminal.lock().mode().contains(Mode::APP_CURSOR))
-                    .unwrap_or(false);
-                if let Some(bytes) = key_to_bytes(&k, st.modifiers, app_cursor) {
+                    .map(|tab| {
+                        let mode = tab.terminal.lock().mode();
+                        (
+                            mode.contains(Mode::APP_CURSOR),
+                            mode.contains(Mode::APP_KEYPAD),
+                        )
+                    })
+                    .unwrap_or((false, false));
+                if let Some(bytes) = key_to_bytes(&k, st.modifiers, app_cursor, app_keypad) {
                     if std::env::var_os("UTERM_KEY_DEBUG").is_some() {
                         eprintln!(
-                            "key {:?}: {:?} (app_cursor={app_cursor})",
+                            "key {:?}: {:?} (app_cursor={app_cursor}, app_keypad={app_keypad})",
                             k.logical_key, bytes
                         );
                     }

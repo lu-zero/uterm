@@ -45,15 +45,9 @@ impl AppState {
         let (cols, rows) = self.grid_dims();
         let listener = self.listener.clone();
         let id = self.next_tab_id;
-        let tab = Tab::new(
-            id,
-            cols,
-            rows,
-            self.cell_w,
-            self.cell_h,
-            listener,
-            &self.command,
-        )?;
+        // A startup command belongs to the initial tab only; new tabs run the
+        // default shell.
+        let tab = Tab::new(id, cols, rows, self.cell_w, self.cell_h, listener, &[])?;
         self.next_tab_id += 1;
         self.tabs.push(tab);
         self.select_tab(self.tabs.len() - 1);

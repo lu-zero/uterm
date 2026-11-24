@@ -57,7 +57,7 @@ macro_rules! bindings {
         ];
         /// Help text with winnow-args markup, generated from the same map.
         pub(crate) const HELP: &str = concat!(
-            $(concat!("`", $label, "`  *", $desc, "*\n")),+
+            $(concat!("**", $label, "**  *", $desc, "*\n")),+
         );
     };
 }
@@ -253,7 +253,7 @@ mod tests {
     fn help_is_generated_from_the_binding_map() {
         assert_eq!(HELP.lines().count(), BINDINGS.len());
         for binding in bindings() {
-            assert!(HELP.contains(&format!("`{}`  *{}*", binding.label, binding.description)));
+            assert!(HELP.contains(&format!("**{}**  *{}*", binding.label, binding.description)));
         }
     }
 
@@ -278,6 +278,10 @@ mod tests {
         assert_eq!(
             lookup_key(ModifiersState::META, &Key::Character("c".into())),
             Some(Action::Copy)
+        );
+        assert_eq!(
+            lookup_key(CTRL_SHIFT, &Key::Character("h".into())),
+            Some(Action::ToggleHelp)
         );
         assert_eq!(
             lookup_key(ModifiersState::empty(), &Key::Character("t".into())),

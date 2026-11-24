@@ -90,6 +90,19 @@ pub(crate) fn parse_geometry(s: &str) -> Result<(usize, usize), Error> {
     Ok((cols, rows))
 }
 
+/// Raw CLI arguments a new window should inherit. The words after `--` are
+/// the initial window's command, so a new window starts with the default shell.
+pub(crate) fn new_window_args() -> Vec<String> {
+    args_before_separator(std::env::args().skip(1))
+}
+
+fn args_before_separator(args: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<String> {
+    args.into_iter()
+        .map(|arg| arg.as_ref().to_owned())
+        .take_while(|arg| arg != "--")
+        .collect()
+}
+
 /// Command-style modifier for app shortcuts: Command on macOS, Ctrl+Shift elsewhere.
 pub(crate) fn is_command_modifier(mods: winit::keyboard::ModifiersState) -> bool {
     #[cfg(target_os = "macos")]
@@ -165,6 +178,19 @@ mod tests {
         };
         assert_eq!(options.profile.as_deref(), Some("mc"));
         assert_eq!(options.command, ["mc", "-d", "--flag"]);
+    }
+
+    #[test]
+    fn new_window_args_stop_at_the_command_separator() {
+        assert_eq!(
+            args_before_separator(["--profile", "mc", "--geometry", "80x24"]),
+            ["--profile", "mc", "--geometry", "80x24"]
+        );
+        assert_eq!(
+            args_before_separator(["--profile", "mc", "--", "mc", "-d"]),
+            ["--profile", "mc"]
+        );
+        assert!(args_before_separator(["--", "mc"]).is_empty());
     }
 
     #[test]
