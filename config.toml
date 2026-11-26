@@ -15,6 +15,11 @@
 #
 # font_size = 14
 
+# Which modifier makes PageUp/PageDown scroll the viewport: "shift",
+# "ctrl+shift" or "both" (the default). "shift" alone is the xterm-modified
+# key an application would otherwise receive as CSI 5;2~ / CSI 6;2~.
+# scrollback_modifier = "both"
+
 # fonts = [
 #   "default",
 #   "Menlo",

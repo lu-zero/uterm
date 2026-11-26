@@ -56,6 +56,7 @@ pub fn run() -> Result<(), Error> {
         geometry,
         face,
         font_size,
+        scrollback_modifier,
         command,
     } = config::load(config.as_deref(), profile.as_deref(), geometry, command)?;
     let event_loop = EventLoop::new()?;
@@ -75,6 +76,7 @@ pub fn run() -> Result<(), Error> {
         geometry,
         face: Some(face),
         font_size,
+        scrollback_modifier,
         command,
         error: error.clone(),
         pending_drop: None,

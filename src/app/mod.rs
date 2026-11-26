@@ -7,7 +7,7 @@ pub(crate) mod tabs;
 use crate::cli::PRESET_SIZES;
 use crate::error::Error;
 use crate::event::Listener;
-use crate::keybindings::Action;
+use crate::keybindings::{Action, ScrollModifier};
 use crate::terminal::{cells_to_px, Tab};
 use rio_vt::clipboard::{Clipboard, ClipboardType};
 use rio_vt::crosswords::grid::row::Row;
@@ -89,6 +89,8 @@ pub(crate) struct AppState {
     pub(crate) window_args: Vec<String>,
     /// Point size from the config, before DPI scaling.
     pub(crate) font_size: f32,
+    /// Which modifier Page keys use to scroll the viewport.
+    pub(crate) scrollback_modifier: ScrollModifier,
     pub(crate) cell_w: usize,
     pub(crate) cell_h: usize,
     pub(crate) modifiers: Modifiers,
@@ -124,6 +126,7 @@ impl AppState {
         clipboard: SystemClipboard,
         face: Face,
         font_size: f32,
+        scrollback_modifier: ScrollModifier,
         window_args: Vec<String>,
     ) -> Result<Self, Error> {
         if !face.valid() {
@@ -145,6 +148,7 @@ impl AppState {
             cell_rects: Vec::new(),
             window_args,
             font_size,
+            scrollback_modifier,
             cell_w,
             cell_h,
             modifiers: Modifiers::default(),

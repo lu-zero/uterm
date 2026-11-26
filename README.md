@@ -31,7 +31,7 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - **Ctrl+Shift+=** / **Ctrl+Shift+-**: cycle through pre-defined window sizes (clears the resize lock)
 - **Alt+Enter**: toggle window-size lock (the window and the terminal grid are both locked)
 - **Ctrl+Shift+H**: show/hide the keyboard-shortcut overlay
-- **Ctrl+Shift+PageUp** / **Ctrl+Shift+PageDown**: scroll the scrollback up/down one page
+- **Ctrl+Shift+PageUp** / **Shift+PageUp**: scroll up one page; **Ctrl+Shift+PageDown** / **Shift+PageDown**: scroll down one page (both by default, configurable via `scrollback_modifier`)
 - **Mouse click on tab**: switch tab
 - **Mouse click on ×**: close tab
 

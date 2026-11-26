@@ -2,9 +2,8 @@
 
 `--profile NAME` selects a startup configuration: terminal size, fonts, font
 size, and optionally a command to run instead of the login shell. A profile
-applies to the window that starts with it; new tabs reuse the same settings,
-and `Ctrl+Shift+N` spawns a new process with the original arguments, so it
-picks the same profile.
+applies to the window that starts with it. New tabs and new windows start the
+login shell; a new window inherits the CLI options, including the profile.
 
 ## Built-in profiles
 
@@ -56,6 +55,16 @@ tiers and installed system fonts.
 
 A custom profile may pick a name that has no built-in size; it then uses the
 default window size unless it sets `geometry`. An unknown name is an error.
+
+## Scrollback modifier
+
+The top-level `scrollback_modifier` key selects which modifier PageUp and
+PageDown scroll the viewport: `"shift"`, `"ctrl+shift"`, or `"both"`. The
+default is `"both"`. An unrecognised value is a config error.
+
+Shift+PageUp/Down is normally sent to the child as xterm's modified keys
+(`CSI 5;2~` / `CSI 6;2~`). Use `"ctrl+shift"` if an application needs those
+sequences; `"shift"` gives Kostya's familiar Shift+Page keys without the Ctrl.
 
 ## Precedence
 

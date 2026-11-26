@@ -18,6 +18,8 @@ pub(crate) enum Trigger {
     },
     /// Command modifier: super on macOS, Ctrl+Shift elsewhere.
     Command(&'static [KeySpec]),
+    /// Page keys with whichever scrollback modifier the config selects.
+    ScrollKeys(&'static [KeySpec]),
     MouseTab,
     MouseClose,
 }
@@ -51,6 +53,35 @@ pub(crate) struct Binding {
 const CTRL_SHIFT: ModifiersState = ModifiersState::CONTROL.union(ModifiersState::SHIFT);
 const CTRL: ModifiersState = ModifiersState::CONTROL;
 const ALT: ModifiersState = ModifiersState::ALT;
+
+/// Which modifier scrolls the viewport with PageUp/PageDown. Shift alone is
+/// the xterm-modified key an application would otherwise receive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ScrollModifier {
+    Shift,
+    CtrlShift,
+    #[default]
+    Both,
+}
+
+impl ScrollModifier {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "shift" => Some(Self::Shift),
+            "ctrl+shift" => Some(Self::CtrlShift),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    fn allows(self, mods: ModifiersState) -> bool {
+        match self {
+            Self::Shift => mods == ModifiersState::SHIFT,
+            Self::CtrlShift => mods == CTRL_SHIFT,
+            Self::Both => mods == ModifiersState::SHIFT || mods == CTRL_SHIFT,
+        }
+    }
+}
 
 macro_rules! bindings {
     ($(($label:literal, $trigger:expr, $action:ident, $desc:literal)),+ $(,)?) => {
@@ -174,20 +205,14 @@ bindings!(
         "show this help"
     ),
     (
-        "Ctrl+Shift+PageUp",
-        Trigger::Keys {
-            mods: CTRL_SHIFT,
-            keys: &[KeySpec::Named(NamedKey::PageUp)]
-        },
+        "Ctrl+Shift+PageUp / Shift+PageUp",
+        Trigger::ScrollKeys(&[KeySpec::Named(NamedKey::PageUp)]),
         ScrollUp,
         "scroll up one page"
     ),
     (
-        "Ctrl+Shift+PageDown",
-        Trigger::Keys {
-            mods: CTRL_SHIFT,
-            keys: &[KeySpec::Named(NamedKey::PageDown)]
-        },
+        "Ctrl+Shift+PageDown / Shift+PageDown",
+        Trigger::ScrollKeys(&[KeySpec::Named(NamedKey::PageDown)]),
         ScrollDown,
         "scroll down one page"
     ),
@@ -209,7 +234,11 @@ pub(crate) fn bindings() -> impl Iterator<Item = &'static Binding> {
     BINDINGS.iter()
 }
 
-pub(crate) fn lookup_key(mods: ModifiersState, key: &Key) -> Option<Action> {
+pub(crate) fn lookup_key(
+    mods: ModifiersState,
+    key: &Key,
+    scroll_modifier: ScrollModifier,
+) -> Option<Action> {
     BINDINGS
         .iter()
         .find(|binding| match binding.trigger {
@@ -219,6 +248,9 @@ pub(crate) fn lookup_key(mods: ModifiersState, key: &Key) -> Option<Action> {
             Trigger::Command(keys) => {
                 crate::cli::is_command_modifier(mods)
                     && keys.iter().any(|spec| matches_spec(*spec, key))
+            }
+            Trigger::ScrollKeys(keys) => {
+                scroll_modifier.allows(mods) && keys.iter().any(|spec| matches_spec(*spec, key))
             }
             Trigger::MouseTab | Trigger::MouseClose => false,
         })
@@ -287,33 +319,63 @@ mod tests {
 
     #[test]
     fn lookup_returns_actions_for_real_key_events() {
+        let both = ScrollModifier::Both;
         assert_eq!(
-            lookup_key(CTRL_SHIFT, &Key::Character("t".into())),
+            lookup_key(CTRL_SHIFT, &Key::Character("t".into()), both),
             Some(Action::NewTab)
         );
         assert_eq!(
-            lookup_key(CTRL, &Key::Named(NamedKey::PageDown)),
+            lookup_key(CTRL, &Key::Named(NamedKey::PageDown), both),
             Some(Action::NextTab)
         );
         assert_eq!(
-            lookup_key(ModifiersState::META, &Key::Character("c".into())),
+            lookup_key(ModifiersState::META, &Key::Character("c".into()), both),
             Some(Action::Copy)
         );
         assert_eq!(
-            lookup_key(CTRL_SHIFT, &Key::Character("h".into())),
+            lookup_key(CTRL_SHIFT, &Key::Character("h".into()), both),
             Some(Action::ToggleHelp)
         );
         assert_eq!(
-            lookup_key(CTRL_SHIFT, &Key::Named(NamedKey::PageUp)),
+            lookup_key(CTRL_SHIFT, &Key::Named(NamedKey::PageUp), both),
             Some(Action::ScrollUp)
         );
         assert_eq!(
-            lookup_key(CTRL_SHIFT, &Key::Named(NamedKey::PageDown)),
+            lookup_key(CTRL_SHIFT, &Key::Named(NamedKey::PageDown), both),
             Some(Action::ScrollDown)
         );
         assert_eq!(
-            lookup_key(ModifiersState::empty(), &Key::Character("t".into())),
+            lookup_key(ModifiersState::empty(), &Key::Character("t".into()), both),
             None
+        );
+    }
+
+    #[test]
+    fn scroll_modifier_selects_which_page_keys_are_ours() {
+        let shift = ScrollModifier::Shift;
+        let ctrl_shift = ScrollModifier::CtrlShift;
+        let page_up = Key::Named(NamedKey::PageUp);
+        assert_eq!(ScrollModifier::parse("shift"), Some(shift));
+        assert_eq!(ScrollModifier::parse("ctrl+shift"), Some(ctrl_shift));
+        assert_eq!(ScrollModifier::parse("both"), Some(ScrollModifier::Both));
+        assert_eq!(ScrollModifier::parse("ctrl"), None);
+
+        assert_eq!(
+            lookup_key(ModifiersState::SHIFT, &page_up, shift),
+            Some(Action::ScrollUp)
+        );
+        assert_eq!(lookup_key(CTRL_SHIFT, &page_up, shift), None);
+        assert_eq!(
+            lookup_key(CTRL_SHIFT, &page_up, ctrl_shift),
+            Some(Action::ScrollUp)
+        );
+        assert_eq!(
+            lookup_key(ModifiersState::SHIFT, &page_up, ctrl_shift),
+            None
+        );
+        assert_eq!(
+            lookup_key(ModifiersState::SHIFT, &page_up, ScrollModifier::Both),
+            Some(Action::ScrollUp)
         );
     }
 }

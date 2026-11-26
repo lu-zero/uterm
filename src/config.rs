@@ -20,6 +20,7 @@
 use crate::cli::{self, StartupGeometry};
 use crate::error::Error;
 use crate::fonts;
+use crate::keybindings::ScrollModifier;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,8 @@ struct ConfigFile {
     fonts: Vec<String>,
     #[serde(default)]
     font_size: Option<f32>,
+    #[serde(default)]
+    scrollback_modifier: Option<String>,
     #[serde(default)]
     profiles: BTreeMap<String, ProfileFile>,
 }
@@ -65,6 +68,7 @@ enum FontSource {
 struct ParsedConfig {
     fonts: Vec<FontSource>,
     font_size: Option<f32>,
+    scrollback_modifier: ScrollModifier,
     profiles: BTreeMap<String, ParsedProfile>,
 }
 
@@ -83,6 +87,7 @@ pub(crate) struct Session {
     pub(crate) face: term_atlas::Face,
     pub(crate) geometry: Option<StartupGeometry>,
     pub(crate) font_size: f32,
+    pub(crate) scrollback_modifier: ScrollModifier,
     /// Program and arguments, or empty for the default login shell.
     pub(crate) command: Vec<String>,
 }
@@ -101,6 +106,7 @@ pub(crate) fn load(
         face,
         geometry,
         font_size,
+        scrollback_modifier: parsed.scrollback_modifier,
         command,
     })
 }
@@ -157,6 +163,14 @@ fn parse_config(text: &str, config_dir: &Path) -> Result<ParsedConfig, Error> {
         toml::from_str(text).map_err(|err| Error::Config(format!("invalid config: {err}")))?;
     let fonts = font_list(&file.fonts, config_dir)?;
     let font_size = validate_font_size(file.font_size)?;
+    let scrollback_modifier = match file.scrollback_modifier.as_deref() {
+        Some(value) => ScrollModifier::parse(value).ok_or_else(|| {
+            Error::Config(format!(
+                "invalid scrollback_modifier `{value}`; expected shift, ctrl+shift or both"
+            ))
+        })?,
+        None => ScrollModifier::default(),
+    };
     let mut profiles = BTreeMap::new();
     for (name, profile) in file.profiles {
         if name.is_empty() {
@@ -185,6 +199,7 @@ fn parse_config(text: &str, config_dir: &Path) -> Result<ParsedConfig, Error> {
     Ok(ParsedConfig {
         fonts,
         font_size,
+        scrollback_modifier,
         profiles,
     })
 }
@@ -356,6 +371,29 @@ mod tests {
         assert!(parse_config("fonts = \"Cascadia.ttf\"\n", Path::new(".")).is_err());
         assert!(parse_config("fonts = [\"\"]\n", Path::new(".")).is_err());
         assert!(parse_config("fonts = [\n", Path::new(".")).is_err());
+    }
+
+    #[test]
+    fn scrollback_modifier_is_validated() {
+        let parse = |value: &str| parse_config(value, Path::new("."));
+        assert_eq!(parse("").unwrap().scrollback_modifier, ScrollModifier::Both);
+        assert_eq!(
+            parse("scrollback_modifier = \"shift\"\n")
+                .unwrap()
+                .scrollback_modifier,
+            ScrollModifier::Shift
+        );
+        assert_eq!(
+            parse("scrollback_modifier = \"ctrl+shift\"\n")
+                .unwrap()
+                .scrollback_modifier,
+            ScrollModifier::CtrlShift
+        );
+        let err = match parse("scrollback_modifier = \"ctrl\"\n") {
+            Ok(_) => panic!("accepted an invalid modifier"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("scrollback_modifier"), "{err}");
     }
 
     #[test]

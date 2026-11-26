@@ -4,6 +4,7 @@ use crate::cli::StartupGeometry;
 use crate::error::Error;
 use crate::event::Listener;
 use crate::event::UiEvent;
+use crate::keybindings::ScrollModifier;
 use crate::terminal::{cells_to_px, Tab};
 use rio_vt::crosswords::grid::Scroll;
 use rio_vt::crosswords::Mode;
@@ -28,6 +29,7 @@ pub(crate) struct Uterm {
     pub(crate) geometry: Option<StartupGeometry>,
     pub(crate) face: Option<Face>,
     pub(crate) font_size: f32,
+    pub(crate) scrollback_modifier: ScrollModifier,
     pub(crate) command: Vec<String>,
     /// Shared with `run` because `run_app` takes the handler by value.
     pub(crate) error: Rc<RefCell<Option<Error>>>,
@@ -76,6 +78,7 @@ impl Uterm {
             clipboard,
             face,
             self.font_size,
+            self.scrollback_modifier,
             window_args,
         )?;
 
@@ -315,7 +318,9 @@ impl ApplicationHandler for Uterm {
                     return;
                 }
                 let mods = st.modifiers.state();
-                if let Some(action) = crate::keybindings::lookup_key(mods, &k.logical_key) {
+                if let Some(action) =
+                    crate::keybindings::lookup_key(mods, &k.logical_key, st.scrollback_modifier)
+                {
                     if std::env::var_os("UTERM_KEY_DEBUG").is_some() {
                         eprintln!(
                             "binding {:?} for {:?} (mods={mods:?})",
