@@ -33,7 +33,11 @@ pub(crate) enum Startup {
 
 /// A tiny terminal.
 #[derive(Args, Debug)]
-#[arg(name = "uterm", after_help = crate::keybindings::HELP)]
+#[arg(
+    name = "uterm",
+    version = env!("CARGO_PKG_VERSION"),
+    after_help = crate::keybindings::HELP
+)]
 struct Cli {
     /// Terminal size in cells, e.g. `128x40`.
     #[arg(long, value_name = "WxH", parse_with = geometry_value)]
@@ -158,6 +162,14 @@ mod tests {
         assert!(parse_geometry("0x1").is_err());
         assert!(parse_geometry("1x0").is_err());
         assert!(parse_geometry("65536x1").is_err());
+    }
+
+    #[test]
+    fn version_flag_reports_the_package_version() {
+        let Startup::Help(text) = parse_args_from(["--version"]).unwrap() else {
+            panic!("not help");
+        };
+        assert_eq!(text.trim(), format!("uterm {}", env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

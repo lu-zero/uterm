@@ -10,7 +10,7 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - VT state and parsing driven by `rio_vt::crosswords::Crosswords` + `performer::Machine`
 - HiDPI-aware cell sizing and rendering with bundled **Maple Mono NF**, with automatic system-font fallback for glyphs it lacks, or a configurable face list (`config.toml`)
 - Per-cell foreground/background color rendering (ANSI 16/256/truecolor, named/indexed palette resolution, inverse)
-- Basic keyboard input (text, arrows/home/end/page/delete, F1–F12, Ctrl/Alt combos)
+- Keyboard input (text, arrows/home/end/page/insert/delete, F1–F24, Ctrl/Alt combos) with xterm-256color encodings, including Shift+Tab, keypad Enter in application keypad mode, and modifier parameters for function and edit keys
 - Minimal tab support (one shell per tab) with a styled tab bar showing per-tab titles (OSC/title updates), clickable tabs, and per-tab close buttons; tabs also close when the shell exits (e.g. `Ctrl+D`) or via shortcut
 - Window title follows the active tab title
 - Local mouse selection/highlight in the terminal area when mouse reporting is disabled by the application
@@ -31,6 +31,7 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - **Ctrl+Shift+=** / **Ctrl+Shift+-**: cycle through pre-defined window sizes (clears the resize lock)
 - **Alt+Enter**: toggle window-size lock (the window and the terminal grid are both locked)
 - **Ctrl+Shift+H**: show/hide the keyboard-shortcut overlay
+- **Ctrl+Shift+PageUp** / **Ctrl+Shift+PageDown**: scroll the scrollback up/down one page
 - **Mouse click on tab**: switch tab
 - **Mouse click on ×**: close tab
 
@@ -91,7 +92,7 @@ See [docs/profiles.md](./docs/profiles.md) for the full reference, precedence ru
 
 `Cargo.lock` is not committed (library-style noise for this small app); dependency resolution comes from `Cargo.toml`.
 
-On Linux the `clipboard`, `x11` and `wayland` features are enabled by default (forwarding to `rio-vt`), matching Rio’s clipboard backend pattern. You can override with cargo features if needed (e.g. `cargo build --no-default-features --features clipboard,x11`).
+Clipboard support comes from `rio-vt` and is always enabled. On Linux the `x11` and `wayland` backends are enabled by default; you can override with cargo features (e.g. `cargo build --no-default-features --features x11`).
 
 ## Scope / limitations
 
@@ -99,8 +100,8 @@ Terminal route IDs are `Tab.id` values and are used for tab-exit routing (`UiEve
 
 - Renders cell fg/bg colors, inverse, dim, bold, italic (sheared), underline (single/double/curly/dotted/dashed), strikethrough and hidden; blink is intentionally not animated, and cursor shapes beyond the basics are not styled per cell
 - Wide characters occupy two cells in the grid and are drawn as one cell sprite covering both cells
-- Basic local selection copy/paste and OSC 52 clipboard handling; no IME, xterm/kitty keyboard protocol, or clipboard popup on paste (plain `Ctrl+V` into terminal)
-- No scrollback UI and no rendered graphics protocols
+- Basic local selection copy/paste and OSC 52 clipboard handling; no IME, full kitty keyboard protocol, or clipboard popup on paste (plain `Ctrl+V` into terminal)
+- Scrollback is kept by rio-vt: the wheel scrolls it when mouse reporting is off, Ctrl+Shift+PageUp/PageDown scroll by page even when an application reports the mouse, and a thin bar on the right shows the position while scrolled. No rendered graphics protocols
 - Simple tab bar UI (titles and close buttons supported, but no tab reordering, dragging, or advanced widgets)
 
 ## License

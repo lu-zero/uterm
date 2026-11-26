@@ -60,7 +60,7 @@ default window size unless it sets `geometry`. An unknown name is an error.
 ## Precedence
 
 - **Size:** `--geometry WxH` → profile `geometry` → built-in size → default window size.
-- **Command:** words after `--` on the command line → profile `command`/`args` → login shell.
+- **Command:** words after `--` on the command line → profile `command`/`args` → login shell. This is the initial window's first tab only; new tabs and windows start a shell.
 - **Fonts:** profile `fonts` → top-level `fonts` → `["default"]`. Omitting `fonts` in a profile inherits the top-level list; `fonts = []` keeps only the bundled face.
 - **Font size:** profile `font_size` → top-level `font_size` → 14.
 

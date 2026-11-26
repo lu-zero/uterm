@@ -11,6 +11,7 @@ use crate::keybindings::Action;
 use crate::terminal::{cells_to_px, Tab};
 use rio_vt::clipboard::{Clipboard, ClipboardType};
 use rio_vt::crosswords::grid::row::Row;
+use rio_vt::crosswords::grid::Scroll;
 use rio_vt::crosswords::square::Square;
 use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
@@ -221,6 +222,14 @@ impl AppState {
                 self.toggle_key_help();
                 Ok(())
             }
+            Action::ScrollUp => {
+                self.scroll_display(Scroll::PageUp);
+                Ok(())
+            }
+            Action::ScrollDown => {
+                self.scroll_display(Scroll::PageDown);
+                Ok(())
+            }
             // Pointer clicks are resolved with their tab index in input.rs.
             Action::SelectTab | Action::CloseTabAt => Ok(()),
         }
@@ -229,6 +238,12 @@ impl AppState {
     pub(crate) fn lock_toggle(&mut self) {
         let locked = !self.geometry_locked;
         self.set_resize_lock(locked);
+    }
+
+    pub(crate) fn scroll_display(&mut self, scroll: Scroll) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            tab.terminal.lock().scroll_display(scroll);
+        }
     }
 
     /// Spawn a fresh, independent uterm window/process with the same CLI

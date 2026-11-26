@@ -35,6 +35,8 @@ pub(crate) enum Action {
     PresetPrev,
     LockResize,
     ToggleHelp,
+    ScrollUp,
+    ScrollDown,
     SelectTab,
     CloseTabAt,
 }
@@ -172,6 +174,24 @@ bindings!(
         "show this help"
     ),
     (
+        "Ctrl+Shift+PageUp",
+        Trigger::Keys {
+            mods: CTRL_SHIFT,
+            keys: &[KeySpec::Named(NamedKey::PageUp)]
+        },
+        ScrollUp,
+        "scroll up one page"
+    ),
+    (
+        "Ctrl+Shift+PageDown",
+        Trigger::Keys {
+            mods: CTRL_SHIFT,
+            keys: &[KeySpec::Named(NamedKey::PageDown)]
+        },
+        ScrollDown,
+        "scroll down one page"
+    ),
+    (
         "Mouse click on tab",
         Trigger::MouseTab,
         SelectTab,
@@ -282,6 +302,14 @@ mod tests {
         assert_eq!(
             lookup_key(CTRL_SHIFT, &Key::Character("h".into())),
             Some(Action::ToggleHelp)
+        );
+        assert_eq!(
+            lookup_key(CTRL_SHIFT, &Key::Named(NamedKey::PageUp)),
+            Some(Action::ScrollUp)
+        );
+        assert_eq!(
+            lookup_key(CTRL_SHIFT, &Key::Named(NamedKey::PageDown)),
+            Some(Action::ScrollDown)
         );
         assert_eq!(
             lookup_key(ModifiersState::empty(), &Key::Character("t".into())),

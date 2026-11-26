@@ -67,6 +67,7 @@ impl AppState {
             cur_u,
             selection,
             display_offset,
+            history_size,
         ) = {
             let Some(tab) = self.tabs.get(self.active) else {
                 return;
@@ -86,6 +87,7 @@ impl AppState {
             let cur_u = resolve_named(&term.colors, NamedColor::Cursor, 0xf0, 0xf0, 0xf0);
             let selection = term.selection.as_ref().and_then(|s| s.to_range(&term));
             let display_offset = term.display_offset();
+            let history_size = term.history_size();
 
             for (r, row) in rows.iter().enumerate() {
                 for col in 0..ncols {
@@ -152,6 +154,7 @@ impl AppState {
                 cur_u,
                 selection,
                 display_offset,
+                history_size,
             )
         };
         self.rows = rows;
@@ -427,6 +430,39 @@ impl AppState {
                     }
                 }
             }
+        }
+
+        // Scroll position: a thin bar on the right while the viewport is
+        // away from the live bottom. The thumb sits at the top when the
+        // oldest history is visible and at the bottom when it is not.
+        if display_offset > 0 && history_size > 0 {
+            let track_x = bw.saturating_sub(3);
+            let track_h = bh.saturating_sub(bar_h);
+            let thumb_h = track_h.min(self.cell_h * 3).max(8);
+            let ratio = display_offset.min(history_size) as f32 / history_size as f32;
+            let thumb_y =
+                bar_h + ((1.0 - ratio) * track_h.saturating_sub(thumb_h) as f32).round() as usize;
+            fill_rect_alpha(
+                &mut buffer,
+                bw,
+                bh,
+                track_x,
+                bar_h,
+                2,
+                track_h,
+                rgb_u32(0x40, 0x48, 0x55),
+                96,
+            );
+            fill_rect(
+                &mut buffer,
+                bw,
+                bh,
+                track_x,
+                thumb_y,
+                2,
+                thumb_h,
+                rgb_u32(0x8b, 0xc5, 0xff),
+            );
         }
 
         // Transient "cols x rows" overlay shown after a resize.
