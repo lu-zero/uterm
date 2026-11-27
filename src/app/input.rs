@@ -3,8 +3,9 @@ use rio_vt::clipboard::ClipboardType;
 use rio_vt::crosswords::grid::Dimensions;
 use rio_vt::crosswords::pos::{Column, Line, Pos, Side};
 use rio_vt::crosswords::square::Wide;
+use rio_vt::crosswords::Crosswords;
 use rio_vt::crosswords::Mode;
-use rio_vt::event::Msg;
+use rio_vt::event::{EventListener, Msg};
 use rio_vt::selection::{Selection, SelectionType};
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
@@ -46,6 +47,61 @@ fn selection_bounds(chars: &[char], index: usize) -> Option<(usize, usize)> {
         }
     }
     (start <= end).then_some((start, end))
+}
+
+/// Whether this screen row wraps into the next one.
+fn row_wrapped<U: EventListener>(term: &Crosswords<U>, row: usize, cols: usize) -> bool {
+    (0..cols).any(|c| term.grid[Pos::new(Line(row as i32), Column(c))].wrapline())
+}
+
+/// Selection covering the word (or URL) under a cell, including rows joined
+/// by line wrapping so long addresses survive a wrap.
+fn word_selection<U: EventListener>(
+    term: &Crosswords<U>,
+    row: usize,
+    col: usize,
+) -> Option<Selection> {
+    let cols = term.grid.columns();
+    if col >= cols {
+        return None;
+    }
+    let mut first = row;
+    while first > 0 && row_wrapped(term, first - 1, cols) {
+        first -= 1;
+    }
+    let mut last = row;
+    while row_wrapped(term, last, cols) && last + 1 < term.grid.screen_lines() {
+        last += 1;
+    }
+    let mut cells = Vec::new();
+    for r in first..=last {
+        for c in 0..cols {
+            let square = term.grid[Pos::new(Line(r as i32), Column(c))];
+            if matches!(square.wide(), Wide::Spacer | Wide::LeadingSpacer) {
+                continue;
+            }
+            cells.push((r, c, square.c()));
+        }
+    }
+    let index = cells
+        .iter()
+        .position(|&(r, c, _)| r == row && c == col)
+        .or_else(|| {
+            cells
+                .iter()
+                .rposition(|&(r, c, _)| r < row || (r == row && c < col))
+        })?;
+    let chars: Vec<char> = cells.iter().map(|&(_, _, ch)| ch).collect();
+    let (start, end) = selection_bounds(&chars, index)?;
+    let (start_row, start_col, _) = cells[start];
+    let (end_row, end_col, _) = cells[end];
+    let mut selection = Selection::new(
+        SelectionType::Simple,
+        Pos::new(Line(start_row as i32), Column(start_col)),
+        Side::Left,
+    );
+    selection.update(Pos::new(Line(end_row as i32), Column(end_col)), Side::Right);
+    Some(selection)
 }
 
 impl AppState {
@@ -231,10 +287,18 @@ impl AppState {
             return;
         };
         let now = Instant::now();
-        let double = self.last_click.is_some_and(|(at, c, r)| {
-            now.duration_since(at) < DOUBLE_CLICK && c == col && r == row
+        let double = self.last_click.is_some_and(|(at, px, py)| {
+            now.duration_since(at) < DOUBLE_CLICK
+                && (x - px).abs() <= self.cell_w as f64
+                && (y - py).abs() <= self.cell_h as f64
         });
-        self.last_click = Some((now, col, row));
+        if std::env::var_os("UTERM_MOUSE_DEBUG").is_some() {
+            eprintln!(
+                "click {col},{row} at ({x:.1},{y:.1}): double={double}, last={:?}",
+                self.last_click.map(|(_, x, y)| (x, y))
+            );
+        }
+        self.last_click = Some((now, x, y));
         if double {
             self.select_word_or_url(row, col);
             self.update_primary_selection();
@@ -255,39 +319,15 @@ impl AppState {
             return;
         };
         let mut term = tab.terminal.lock();
-        let ncols = term.grid.columns();
-        if col >= ncols {
-            return;
+        if let Some(selection) = word_selection(&term, row, col) {
+            term.selection = Some(selection);
         }
-        let line = Line(row as i32);
-        let mut chars = Vec::new();
-        let mut cells = Vec::new();
-        for c in 0..ncols {
-            let square = term.grid[Pos::new(line, Column(c))];
-            if matches!(square.wide(), Wide::Spacer | Wide::LeadingSpacer) {
-                continue;
-            }
-            chars.push(square.c());
-            cells.push(c);
-        }
-        let index = cells.iter().rposition(|&c| c <= col).unwrap_or(0);
-        let Some((start, end)) = selection_bounds(&chars, index) else {
-            return;
-        };
-        let mut selection = Selection::new(
-            SelectionType::Simple,
-            Pos::new(line, Column(cells[start])),
-            Side::Left,
-        );
-        selection.update(Pos::new(line, Column(cells[end])), Side::Right);
-        term.selection = Some(selection);
     }
 
     pub(crate) fn update_local_selection(&mut self, x: f64, y: f64) {
         if self.local_pointer != LocalPointerState::Selecting || !self.mouse_buttons[0] {
             return;
         }
-        self.last_click = None;
         if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
             if let Some(tab) = self.tabs.get(self.active) {
                 let mut term = tab.terminal.lock();
@@ -645,7 +685,10 @@ mod tests {
     use super::{
         cursor_key_bytes, edit_key_bytes, encode_mouse_report, function_key_bytes,
         function_key_index, key_to_bytes, motion_button, named_key_code, selection_bounds,
+        word_selection,
     };
+    use rio_vt::crosswords::pos::{Column, Line, Pos, Side};
+    use rio_vt::selection::{Selection, SelectionType};
     use winit::event::{ElementState, KeyEvent, Modifiers};
     use winit::keyboard::{
         Key, KeyCode, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
@@ -820,6 +863,63 @@ mod tests {
         assert_eq!(
             key_to_bytes(&physical_comma, none, false, false).as_deref(),
             Some(&b"\x1b[57416u"[..])
+        );
+    }
+
+    #[test]
+    fn selection_range_round_trips_through_rio() {
+        use rio_vt::ansi::CursorShape;
+        use rio_vt::crosswords::{Crosswords, CrosswordsSize};
+        use rio_vt::event::{VoidListener, WindowId};
+
+        let dims = CrosswordsSize::new_with_dimensions(20, 3, 0, 0, 9, 18);
+        let mut term = Crosswords::new(
+            dims,
+            CursorShape::Block,
+            VoidListener,
+            WindowId::from(0),
+            0,
+            100,
+        );
+        for (i, ch) in "hello world".chars().enumerate() {
+            term.grid[Pos::new(Line(0), Column(i))].set_c(ch);
+        }
+        let mut selection = Selection::new(
+            SelectionType::Simple,
+            Pos::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        selection.update(Pos::new(Line(0), Column(4)), Side::Right);
+        term.selection = Some(selection);
+        assert_eq!(term.selection_to_string().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn a_url_wrapped_across_rows_is_selected_whole() {
+        use rio_vt::ansi::CursorShape;
+        use rio_vt::crosswords::{Crosswords, CrosswordsSize};
+        use rio_vt::event::{VoidListener, WindowId};
+
+        let dims = CrosswordsSize::new_with_dimensions(20, 3, 0, 0, 9, 18);
+        let mut term = Crosswords::new(
+            dims,
+            CursorShape::Block,
+            VoidListener,
+            WindowId::from(0),
+            0,
+            100,
+        );
+        for (i, ch) in "see http://example.c".chars().enumerate() {
+            term.grid[Pos::new(Line(0), Column(i))].set_c(ch);
+        }
+        term.grid[Pos::new(Line(0), Column(19))].set_wrapline(true);
+        for (i, ch) in "om/path?q=1. end".chars().enumerate() {
+            term.grid[Pos::new(Line(1), Column(i))].set_c(ch);
+        }
+        term.selection = word_selection(&term, 1, 2);
+        assert_eq!(
+            term.selection_to_string().as_deref(),
+            Some("http://example.com/path?q=1")
         );
     }
 
