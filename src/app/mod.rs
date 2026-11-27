@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use term_atlas::{Atlas, Face, GlyphRect, PixelFormat};
-use winit::dpi::{PhysicalSize, Size};
+use winit::dpi::{PhysicalPosition, PhysicalSize, Position, Size};
 use winit::event::Modifiers;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, OwnedDisplayHandle};
 use winit::raw_window_handle::HasDisplayHandle;
@@ -232,6 +232,16 @@ impl AppState {
         self.clicks = ClickSequence::None;
     }
 
+    /// Put the pointer on the cell the cursor will occupy when the view
+    /// returns to the live screen. `row` is the cursor's grid row, not the
+    /// scrolled viewport row.
+    pub(crate) fn warp_pointer_to(&self, row: i32, col: usize) {
+        let (x, y) = cursor_pixel(row, col, self.cell_w, self.cell_h);
+        let _ = self
+            .window
+            .set_cursor_position(Position::Physical(PhysicalPosition::new(x, y)));
+    }
+
     pub(crate) fn sync_font_metrics(&mut self, scale: f64) -> Result<(), Error> {
         self.atlas = atlas_for(&self.face, self.font_size, scale);
         self.cell_w = self.atlas.cell().0 as usize;
@@ -394,6 +404,13 @@ impl AppState {
     }
 }
 
+/// Centre of a cell in physical pixels, below the tab bar.
+fn cursor_pixel(row: i32, col: usize, cell_w: usize, cell_h: usize) -> (i32, i32) {
+    let x = (col as f64 * cell_w as f64 + cell_w as f64 / 2.0).round() as i32;
+    let y = (cell_h as f64 + row as f64 * cell_h as f64 + cell_h as f64 / 2.0).round() as i32;
+    (x, y)
+}
+
 fn grid_dims_from(width: usize, height: usize, cell_w: usize, cell_h: usize) -> (usize, usize) {
     let max_cells = usize::from(u16::MAX);
     let cols = (width / cell_w.max(1)).clamp(2, max_cells);
@@ -461,6 +478,12 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_pixel_centres_cells_below_the_tab_bar() {
+        assert_eq!(cursor_pixel(0, 0, 10, 20), (5, 30));
+        assert_eq!(cursor_pixel(2, 5, 10, 20), (55, 70));
+    }
 
     #[test]
     fn click_sequence_counts_only_close_repeated_presses() {

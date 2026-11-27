@@ -336,17 +336,21 @@ impl ApplicationHandler for Uterm {
                     return;
                 }
 
-                let (app_cursor, app_keypad) = st
+                let (app_cursor, app_keypad, scrolled_cursor) = st
                     .tabs
                     .get(st.active)
                     .map(|tab| {
-                        let mode = tab.terminal.lock().mode();
+                        let term = tab.terminal.lock();
+                        let mode = term.mode();
+                        let cursor = term.cursor();
                         (
                             mode.contains(Mode::APP_CURSOR),
                             mode.contains(Mode::APP_KEYPAD),
+                            (term.display_offset() > 0)
+                                .then_some((cursor.pos.row.0, cursor.pos.col.0)),
                         )
                     })
-                    .unwrap_or((false, false));
+                    .unwrap_or((false, false, None));
                 if let Some(bytes) = key_to_bytes(&k, st.modifiers, app_cursor, app_keypad) {
                     if std::env::var_os("UTERM_KEY_DEBUG").is_some() {
                         eprintln!(
@@ -355,7 +359,18 @@ impl ApplicationHandler for Uterm {
                         );
                     }
                     if let Some(tab) = st.tabs.get(st.active) {
+                        if scrolled_cursor.is_some() {
+                            // Typing while scrolled returns to the live row,
+                            // as in rune-term, and drops a stale selection.
+                            let mut term = tab.terminal.lock();
+                            term.scroll_display(Scroll::Bottom);
+                            term.selection = None;
+                        }
                         let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
+                    }
+                    if let Some((row, col)) = scrolled_cursor {
+                        let rows = st.grid_dims().1 as i32;
+                        st.warp_pointer_to(row.clamp(0, rows - 1), col);
                     }
                 }
             }
