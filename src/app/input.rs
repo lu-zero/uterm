@@ -49,9 +49,23 @@ fn selection_bounds(chars: &[char], index: usize) -> Option<(usize, usize)> {
     (start <= end).then_some((start, end))
 }
 
+/// Selection covering a whole logical line, including wrapped rows, without
+/// the trailing newline that `SelectionType::Lines` would add.
+fn line_selection<U: EventListener>(term: &Crosswords<U>, row: usize) -> Option<Selection> {
+    if row >= term.grid.screen_lines() {
+        return None;
+    }
+    let point = Pos::new(Line(row as i32), Column(0));
+    let start = term.row_search_left(point);
+    let end = term.row_search_right(point);
+    let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
+    selection.update(end, Side::Right);
+    Some(selection)
+}
+
 /// Whether this screen row wraps into the next one.
 fn row_wrapped<U: EventListener>(term: &Crosswords<U>, row: usize, cols: usize) -> bool {
-    (0..cols).any(|c| term.grid[Pos::new(Line(row as i32), Column(c))].wrapline())
+    term.grid[Pos::new(Line(row as i32), Column(cols - 1))].wrapline()
 }
 
 /// Selection covering the word (or URL) under a cell, including rows joined
@@ -287,18 +301,28 @@ impl AppState {
             return;
         };
         let now = Instant::now();
-        let double = self.last_click.is_some_and(|(at, px, py)| {
-            now.duration_since(at) < DOUBLE_CLICK
-                && (x - px).abs() <= self.cell_w as f64
-                && (y - py).abs() <= self.cell_h as f64
-        });
+        let (count, double) = match self.last_click {
+            Some((at, px, py, n))
+                if now.duration_since(at) < DOUBLE_CLICK
+                    && (x - px).abs() <= self.cell_w as f64
+                    && (y - py).abs() <= self.cell_h as f64 =>
+            {
+                (n + 1, n == 1)
+            }
+            _ => (1, false),
+        };
         if std::env::var_os("UTERM_MOUSE_DEBUG").is_some() {
             eprintln!(
-                "click {col},{row} at ({x:.1},{y:.1}): double={double}, last={:?}",
-                self.last_click.map(|(_, x, y)| (x, y))
+                "click {col},{row} at ({x:.1},{y:.1}): count={count}, last={:?}",
+                self.last_click.map(|(_, x, y, _)| (x, y))
             );
         }
-        self.last_click = Some((now, x, y));
+        self.last_click = Some((now, x, y, count));
+        if count >= 3 {
+            self.select_line(row);
+            self.update_primary_selection();
+            return;
+        }
         if double {
             self.select_word_or_url(row, col);
             self.update_primary_selection();
@@ -320,6 +344,16 @@ impl AppState {
         };
         let mut term = tab.terminal.lock();
         if let Some(selection) = word_selection(&term, row, col) {
+            term.selection = Some(selection);
+        }
+    }
+
+    fn select_line(&mut self, row: usize) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let mut term = tab.terminal.lock();
+        if let Some(selection) = line_selection(&term, row) {
             term.selection = Some(selection);
         }
     }
@@ -684,8 +718,8 @@ pub(crate) fn key_to_bytes(
 mod tests {
     use super::{
         cursor_key_bytes, edit_key_bytes, encode_mouse_report, function_key_bytes,
-        function_key_index, key_to_bytes, motion_button, named_key_code, selection_bounds,
-        word_selection,
+        function_key_index, key_to_bytes, line_selection, motion_button, named_key_code,
+        selection_bounds, word_selection,
     };
     use rio_vt::crosswords::pos::{Column, Line, Pos, Side};
     use rio_vt::selection::{Selection, SelectionType};
@@ -920,6 +954,35 @@ mod tests {
         assert_eq!(
             term.selection_to_string().as_deref(),
             Some("http://example.com/path?q=1")
+        );
+    }
+
+    #[test]
+    fn triple_click_selects_the_whole_logical_line() {
+        use rio_vt::ansi::CursorShape;
+        use rio_vt::crosswords::{Crosswords, CrosswordsSize};
+        use rio_vt::event::{VoidListener, WindowId};
+
+        let dims = CrosswordsSize::new_with_dimensions(20, 3, 0, 0, 9, 18);
+        let mut term = Crosswords::new(
+            dims,
+            CursorShape::Block,
+            VoidListener,
+            WindowId::from(0),
+            0,
+            100,
+        );
+        for (i, ch) in "see http://example.c".chars().enumerate() {
+            term.grid[Pos::new(Line(0), Column(i))].set_c(ch);
+        }
+        term.grid[Pos::new(Line(0), Column(19))].set_wrapline(true);
+        for (i, ch) in "om/path now".chars().enumerate() {
+            term.grid[Pos::new(Line(1), Column(i))].set_c(ch);
+        }
+        term.selection = line_selection(&term, 1);
+        assert_eq!(
+            term.selection_to_string().as_deref(),
+            Some("see http://example.com/path now")
         );
     }
 
