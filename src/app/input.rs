@@ -55,7 +55,8 @@ fn line_selection<U: EventListener>(term: &Crosswords<U>, row: usize) -> Option<
     if row >= term.grid.screen_lines() {
         return None;
     }
-    let point = Pos::new(Line(row as i32), Column(0));
+    let line = Line(row as i32 - term.display_offset() as i32);
+    let point = Pos::new(line, Column(0));
     let start = term.row_search_left(point);
     let end = term.row_search_right(point);
     let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
@@ -63,9 +64,9 @@ fn line_selection<U: EventListener>(term: &Crosswords<U>, row: usize) -> Option<
     Some(selection)
 }
 
-/// Whether this screen row wraps into the next one.
-fn row_wrapped<U: EventListener>(term: &Crosswords<U>, row: usize, cols: usize) -> bool {
-    term.grid[Pos::new(Line(row as i32), Column(cols - 1))].wrapline()
+/// Whether this grid line wraps into the next one.
+fn row_wrapped<U: EventListener>(term: &Crosswords<U>, line: Line, cols: usize) -> bool {
+    term.grid[Pos::new(line, Column(cols - 1))].wrapline()
 }
 
 /// Selection covering the word (or URL) under a cell, including rows joined
@@ -79,42 +80,43 @@ fn word_selection<U: EventListener>(
     if col >= cols {
         return None;
     }
-    let mut first = row;
-    while first > 0 && row_wrapped(term, first - 1, cols) {
+    let clicked = Line(row as i32 - term.display_offset() as i32);
+    let mut first = clicked.0;
+    while first > term.grid.topmost_line().0 && row_wrapped(term, Line(first - 1), cols) {
         first -= 1;
     }
-    let mut last = row;
-    while row_wrapped(term, last, cols) && last + 1 < term.grid.screen_lines() {
+    let mut last = clicked.0;
+    while row_wrapped(term, Line(last), cols) && last + 1 < term.grid.bottommost_line().0 {
         last += 1;
     }
     let mut cells = Vec::new();
-    for r in first..=last {
+    for line in first..=last {
         for c in 0..cols {
-            let square = term.grid[Pos::new(Line(r as i32), Column(c))];
+            let square = term.grid[Pos::new(Line(line), Column(c))];
             if matches!(square.wide(), Wide::Spacer | Wide::LeadingSpacer) {
                 continue;
             }
-            cells.push((r, c, square.c()));
+            cells.push((line, c, square.c()));
         }
     }
     let index = cells
         .iter()
-        .position(|&(r, c, _)| r == row && c == col)
+        .position(|&(line, c, _)| line == clicked.0 && c == col)
         .or_else(|| {
             cells
                 .iter()
-                .rposition(|&(r, c, _)| r < row || (r == row && c < col))
+                .rposition(|&(line, c, _)| line < clicked.0 || (line == clicked.0 && c < col))
         })?;
     let chars: Vec<char> = cells.iter().map(|&(_, _, ch)| ch).collect();
     let (start, end) = selection_bounds(&chars, index)?;
-    let (start_row, start_col, _) = cells[start];
-    let (end_row, end_col, _) = cells[end];
+    let (start_line, start_col, _) = cells[start];
+    let (end_line, end_col, _) = cells[end];
     let mut selection = Selection::new(
         SelectionType::Simple,
-        Pos::new(Line(start_row as i32), Column(start_col)),
+        Pos::new(Line(start_line), Column(start_col)),
         Side::Left,
     );
-    selection.update(Pos::new(Line(end_row as i32), Column(end_col)), Side::Right);
+    selection.update(Pos::new(Line(end_line), Column(end_col)), Side::Right);
     Some(selection)
 }
 
@@ -330,7 +332,8 @@ impl AppState {
         }
         if let Some(tab) = self.tabs.get(self.active) {
             let mut term = tab.terminal.lock();
-            let point = Pos::new(Line(row as i32), Column(col));
+            let line = Line(row as i32 - term.display_offset() as i32);
+            let point = Pos::new(line, Column(col));
             term.selection = Some(Selection::new(SelectionType::Simple, point, side));
         }
         self.local_pointer = LocalPointerState::Selecting;
@@ -365,8 +368,9 @@ impl AppState {
         if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
             if let Some(tab) = self.tabs.get(self.active) {
                 let mut term = tab.terminal.lock();
+                let line = Line(row as i32 - term.display_offset() as i32);
                 if let Some(sel) = &mut term.selection {
-                    sel.update(Pos::new(Line(row as i32), Column(col)), side);
+                    sel.update(Pos::new(line, Column(col)), side);
                 }
             }
         }
@@ -377,8 +381,9 @@ impl AppState {
             if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
                 if let Some(tab) = self.tabs.get(self.active) {
                     let mut term = tab.terminal.lock();
+                    let line = Line(row as i32 - term.display_offset() as i32);
                     if let Some(sel) = &mut term.selection {
-                        sel.update(Pos::new(Line(row as i32), Column(col)), side);
+                        sel.update(Pos::new(line, Column(col)), side);
                     }
                 }
             }
@@ -955,6 +960,36 @@ mod tests {
             term.selection_to_string().as_deref(),
             Some("http://example.com/path?q=1")
         );
+    }
+
+    #[test]
+    fn selection_uses_grid_lines_when_scrolled_into_history() {
+        use rio_vt::ansi::CursorShape;
+        use rio_vt::crosswords::grid::Scroll;
+        use rio_vt::crosswords::{Crosswords, CrosswordsSize};
+        use rio_vt::event::{VoidListener, WindowId};
+
+        let dims = CrosswordsSize::new_with_dimensions(20, 3, 0, 0, 9, 18);
+        let mut term = Crosswords::new(
+            dims,
+            CursorShape::Block,
+            VoidListener,
+            WindowId::from(0),
+            0,
+            100,
+        );
+        for (i, ch) in "history line".chars().enumerate() {
+            term.grid[Pos::new(Line(0), Column(i))].set_c(ch);
+        }
+        for (i, ch) in "current line".chars().enumerate() {
+            term.grid[Pos::new(Line(1), Column(i))].set_c(ch);
+        }
+        term.scroll_up_relative(Line(0), 1);
+        term.scroll_display(Scroll::Delta(1));
+        assert_eq!(term.display_offset(), 1);
+
+        term.selection = line_selection(&term, 0);
+        assert_eq!(term.selection_to_string().as_deref(), Some("history line"));
     }
 
     #[test]
