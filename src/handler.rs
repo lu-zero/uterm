@@ -5,7 +5,7 @@ use crate::error::Error;
 use crate::event::Listener;
 use crate::event::UiEvent;
 use crate::keybindings::ScrollModifier;
-use crate::terminal::{cells_to_px, Tab};
+use crate::terminal::Tab;
 use rio_vt::crosswords::grid::Scroll;
 use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
@@ -17,7 +17,7 @@ use std::sync::mpsc::Receiver;
 use term_atlas::Face;
 use winit::application::ApplicationHandler;
 use winit::data_transfer::TypeHint;
-use winit::dpi::{LogicalSize, PhysicalSize, Size};
+use winit::dpi::LogicalSize;
 use winit::event::{ButtonSource, ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, AsyncRequestSerial, ControlFlow, DndAction};
 use winit::window::{Window, WindowAttributes, WindowId as WinitWindowId};
@@ -84,15 +84,7 @@ impl Uterm {
 
         let (cols, rows) = if let Some(g) = self.geometry {
             // Request the exact terminal pixel size (plus one row for the tab bar).
-            let rows_with_bar = g.rows.checked_add(1).ok_or(Error::GridSize {
-                cols: g.cols,
-                rows: g.rows,
-            })?;
-            let width = cells_to_px(g.cols, st.cell_w, g.cols, g.rows)?;
-            let height = cells_to_px(rows_with_bar, st.cell_h, g.cols, g.rows)?;
-            let _ = st
-                .window
-                .request_surface_size(Size::Physical(PhysicalSize::new(width, height)));
+            st.request_grid_size(g.cols, g.rows)?;
             (g.cols, g.rows)
         } else {
             st.grid_dims()
@@ -300,15 +292,18 @@ impl ApplicationHandler for Uterm {
                         } else {
                             (65u8, -lines)
                         };
+                        let report = st.mouse_report_mode();
                         for _ in 0..count.min(10) {
-                            if st.mouse_report_mode() {
+                            if report {
                                 st.send_wheel_motion(btn, col as u16, row as u16);
                             } else if let Some(tab) = st.tabs.get(st.active) {
                                 // No application grabbed the mouse: scroll the
                                 // viewport ourselves instead of reporting nothing.
                                 tab.terminal.lock().scroll_display(Scroll::Delta(lines));
-                                st.window.request_redraw();
                             }
+                        }
+                        if !report {
+                            st.window.request_redraw();
                         }
                     }
                 }

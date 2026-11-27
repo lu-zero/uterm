@@ -43,7 +43,47 @@ pub(crate) fn indexed_color(idx: u8) -> (u8, u8, u8) {
     }
 }
 
-pub(crate) fn resolve_ansi_color(color: AnsiColor, colors: &TermColors, _default: u32) -> u32 {
+/// Fallback RGB for a named color. Foreground and its dim/light aliases all
+/// use the foreground slot, as in rio's palette.
+fn named_default(name: NamedColor) -> (NamedColor, (u8, u8, u8)) {
+    let rgb = match name {
+        NamedColor::Foreground | NamedColor::LightForeground | NamedColor::DimForeground => {
+            (0xd8, 0xd8, 0xd8)
+        }
+        NamedColor::Background => (0x10, 0x10, 0x10),
+        NamedColor::Cursor => (0xf0, 0xf0, 0xf0),
+        NamedColor::Black | NamedColor::DimBlack => (0, 0, 0),
+        NamedColor::Red => (0xcd, 0, 0),
+        NamedColor::Green => (0, 0xcd, 0),
+        NamedColor::Yellow => (0xcd, 0xcd, 0),
+        NamedColor::Blue => (0, 0, 0xee),
+        NamedColor::Magenta => (0xcd, 0, 0xcd),
+        NamedColor::Cyan => (0, 0xcd, 0xcd),
+        NamedColor::White => (0xe5, 0xe5, 0xe5),
+        NamedColor::LightBlack => (0x7f, 0x7f, 0x7f),
+        NamedColor::LightRed => (0xff, 0, 0),
+        NamedColor::LightGreen => (0, 0xff, 0),
+        NamedColor::LightYellow => (0xff, 0xff, 0),
+        NamedColor::LightBlue => (0x5c, 0x5c, 0xff),
+        NamedColor::LightMagenta => (0xff, 0, 0xff),
+        NamedColor::LightCyan => (0, 0xff, 0xff),
+        NamedColor::LightWhite => (0xff, 0xff, 0xff),
+        NamedColor::DimRed => (0x88, 0, 0),
+        NamedColor::DimGreen => (0, 0x88, 0),
+        NamedColor::DimYellow => (0x88, 0x88, 0),
+        NamedColor::DimBlue => (0, 0, 0x88),
+        NamedColor::DimMagenta => (0x88, 0, 0x88),
+        NamedColor::DimCyan => (0, 0x88, 0x88),
+        NamedColor::DimWhite => (0x99, 0x99, 0x99),
+    };
+    let name = match name {
+        NamedColor::LightForeground | NamedColor::DimForeground => NamedColor::Foreground,
+        other => other,
+    };
+    (name, rgb)
+}
+
+pub(crate) fn resolve_ansi_color(color: AnsiColor, colors: &TermColors) -> u32 {
     match color {
         AnsiColor::Spec(rgb) => rgb_u32(rgb.r, rgb.g, rgb.b),
         AnsiColor::Indexed(i) => {
@@ -54,135 +94,10 @@ pub(crate) fn resolve_ansi_color(color: AnsiColor, colors: &TermColors, _default
                 rgb_u32(r, g, b)
             }
         }
-        AnsiColor::Named(n) => match n {
-            NamedColor::Foreground | NamedColor::LightForeground | NamedColor::DimForeground => {
-                resolve_named(colors, NamedColor::Foreground, 0xd8, 0xd8, 0xd8)
-            }
-            NamedColor::Background => {
-                resolve_named(colors, NamedColor::Background, 0x10, 0x10, 0x10)
-            }
-            NamedColor::Cursor => resolve_named(colors, NamedColor::Cursor, 0xf0, 0xf0, 0xf0),
-            NamedColor::Black => colors[NamedColor::Black]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0, 0)),
-            NamedColor::Red => colors[NamedColor::Red]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0xcd, 0, 0)),
-            NamedColor::Green => colors[NamedColor::Green]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0xcd, 0)),
-            NamedColor::Yellow => colors[NamedColor::Yellow]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0xcd, 0xcd, 0)),
-            NamedColor::Blue => colors[NamedColor::Blue]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0, 0xee)),
-            NamedColor::Magenta => colors[NamedColor::Magenta]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0xcd, 0, 0xcd)),
-            NamedColor::Cyan => colors[NamedColor::Cyan]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0xcd, 0xcd)),
-            NamedColor::White => colors[NamedColor::White]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0xe5, 0xe5, 0xe5)),
-            NamedColor::LightBlack => colors[NamedColor::LightBlack]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0x7f, 0x7f, 0x7f)),
-            NamedColor::LightRed => colors[NamedColor::LightRed]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0xff, 0, 0)),
-            NamedColor::LightGreen => colors[NamedColor::LightGreen]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0xff, 0)),
-            NamedColor::LightYellow => colors[NamedColor::LightYellow]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0xff, 0xff, 0)),
-            NamedColor::LightBlue => colors[NamedColor::LightBlue]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0x5c, 0x5c, 0xff)),
-            NamedColor::LightMagenta => colors[NamedColor::LightMagenta]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0xff, 0, 0xff)),
-            NamedColor::LightCyan => colors[NamedColor::LightCyan]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0xff, 0xff)),
-            NamedColor::LightWhite => colors[NamedColor::LightWhite]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0xff, 0xff, 0xff)),
-            NamedColor::DimBlack => colors[NamedColor::DimBlack]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0, 0)),
-            NamedColor::DimRed => colors[NamedColor::DimRed]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0x88, 0, 0)),
-            NamedColor::DimGreen => colors[NamedColor::DimGreen]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0x88, 0)),
-            NamedColor::DimYellow => colors[NamedColor::DimYellow]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0x88, 0x88, 0)),
-            NamedColor::DimBlue => colors[NamedColor::DimBlue]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0, 0x88)),
-            NamedColor::DimMagenta => colors[NamedColor::DimMagenta]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0x88, 0, 0x88)),
-            NamedColor::DimCyan => colors[NamedColor::DimCyan]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0, 0x88, 0x88)),
-            NamedColor::DimWhite => colors[NamedColor::DimWhite]
-                .as_ref()
-                .copied()
-                .map(arr_to_u32)
-                .unwrap_or(rgb_u32(0x99, 0x99, 0x99)),
-        },
+        AnsiColor::Named(n) => {
+            let (name, (r, g, b)) = named_default(n);
+            resolve_named(colors, name, r, g, b)
+        }
     }
 }
 

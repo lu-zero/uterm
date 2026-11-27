@@ -103,8 +103,8 @@ impl AppState {
                         continue;
                     };
                     let style = term.grid.style_of(square);
-                    let mut fg = resolve_ansi_color(style.fg, &term.colors, default_fg);
-                    let mut bg = resolve_ansi_color(style.bg, &term.colors, default_bg);
+                    let mut fg = resolve_ansi_color(style.fg, &term.colors);
+                    let mut bg = resolve_ansi_color(style.bg, &term.colors);
                     if style
                         .flags
                         .contains(rio_vt::crosswords::style::StyleFlags::INVERSE)

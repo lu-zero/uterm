@@ -266,12 +266,9 @@ impl AppState {
         }
     }
 
-    /// Apply a preset size in cells. An explicit size change clears the resize lock.
-    pub(crate) fn apply_preset(&mut self, direction: i32) -> Result<(), Error> {
-        let len = PRESET_SIZES.len() as i32;
-        self.preset_index = (self.preset_index as i32 + direction).rem_euclid(len) as usize;
-        self.set_resize_lock(false);
-        let (cols, rows) = PRESET_SIZES[self.preset_index];
+    /// Resize the window so the terminal has `cols` x `rows` cells, plus one
+    /// row for the tab bar.
+    pub(crate) fn request_grid_size(&self, cols: usize, rows: usize) -> Result<(), Error> {
         let rows_with_bar = rows.checked_add(1).ok_or(Error::GridSize { cols, rows })?;
         let width = cells_to_px(cols, self.cell_w, cols, rows)?;
         let height = cells_to_px(rows_with_bar, self.cell_h, cols, rows)?;
@@ -279,6 +276,15 @@ impl AppState {
             .window
             .request_surface_size(Size::Physical(PhysicalSize::new(width, height)));
         Ok(())
+    }
+
+    /// Apply a preset size in cells. An explicit size change clears the resize lock.
+    pub(crate) fn apply_preset(&mut self, direction: i32) -> Result<(), Error> {
+        let len = PRESET_SIZES.len() as i32;
+        self.preset_index = (self.preset_index as i32 + direction).rem_euclid(len) as usize;
+        self.set_resize_lock(false);
+        let (cols, rows) = PRESET_SIZES[self.preset_index];
+        self.request_grid_size(cols, rows)
     }
 
     pub(crate) fn show_resize_overlay(&mut self) {
@@ -327,34 +333,22 @@ fn grid_dims_from(width: usize, height: usize, cell_w: usize, cell_h: usize) -> 
 }
 
 impl AppState {
+    fn selected_text(&self) -> Option<String> {
+        let tab = self.tabs.get(self.active)?;
+        let term = tab.terminal.lock();
+        term.selection_to_string().filter(|text| !text.is_empty())
+    }
+
     pub(crate) fn copy_selection(&mut self) {
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
-        };
-        let text = {
-            let term = tab.terminal.lock();
-            term.selection_to_string()
-        };
-        if let Some(text) = text {
-            if !text.is_empty() {
-                self.clipboard.set(ClipboardType::Clipboard, text.clone());
-                self.clipboard.set(ClipboardType::Selection, text);
-            }
+        if let Some(text) = self.selected_text() {
+            self.clipboard.set(ClipboardType::Clipboard, text.clone());
+            self.clipboard.set(ClipboardType::Selection, text);
         }
     }
 
     pub(crate) fn update_primary_selection(&mut self) {
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
-        };
-        let text = {
-            let term = tab.terminal.lock();
-            term.selection_to_string()
-        };
-        if let Some(text) = text {
-            if !text.is_empty() {
-                self.clipboard.set(ClipboardType::Selection, text);
-            }
+        if let Some(text) = self.selected_text() {
+            self.clipboard.set(ClipboardType::Selection, text);
         }
     }
 

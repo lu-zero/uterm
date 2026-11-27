@@ -279,14 +279,6 @@ fn label_keys() -> Vec<String> {
     keys
 }
 
-pub(crate) fn mouse_action(close: bool) -> Action {
-    if close {
-        Action::CloseTabAt
-    } else {
-        Action::SelectTab
-    }
-}
-
 fn matches_spec(spec: KeySpec, key: &Key) -> bool {
     match (spec, key) {
         (KeySpec::Char(expected), Key::Character(text)) => {

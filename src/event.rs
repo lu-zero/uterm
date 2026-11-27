@@ -37,28 +37,18 @@ impl Listener {
 
 impl EventListener for Listener {
     fn send_event(&self, event: RioEvent, _id: WindowId) {
-        match event {
+        let ui = match event {
             RioEvent::CloseTerminal(route) | RioEvent::ChildExited(route, _) => {
-                self.notify(UiEvent::TabExited(route));
+                UiEvent::TabExited(route)
             }
-            RioEvent::Title(route, title) => {
-                self.notify(UiEvent::TitleChanged(route, title));
-            }
-            RioEvent::ClipboardStore(ty, text) => {
-                self.notify(UiEvent::ClipboardStore(ty, text));
-            }
+            RioEvent::Title(route, title) => UiEvent::TitleChanged(route, title),
+            RioEvent::ClipboardStore(ty, text) => UiEvent::ClipboardStore(ty, text),
             RioEvent::ClipboardLoad(route, ty, formatter) => {
-                self.notify(UiEvent::ClipboardLoad(route, ty, formatter));
+                UiEvent::ClipboardLoad(route, ty, formatter)
             }
-            RioEvent::ResetTitle => {
-                self.notify(UiEvent::Wakeup);
-            }
-            RioEvent::SyncWindowTitle => {
-                self.notify(UiEvent::TitleSync);
-            }
-            _ => {
-                self.notify(UiEvent::Wakeup);
-            }
-        }
+            RioEvent::SyncWindowTitle => UiEvent::TitleSync,
+            _ => UiEvent::Wakeup,
+        };
+        self.notify(ui);
     }
 }

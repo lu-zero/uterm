@@ -145,53 +145,40 @@ impl AppState {
         Some((col, row, side))
     }
 
+    fn mouse_mode(&self) -> Option<Mode> {
+        Some(self.tabs.get(self.active)?.terminal.lock().mode())
+    }
+
+    fn send_mouse_bytes(&self, bytes: Vec<u8>) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
+        }
+    }
+
     pub(crate) fn mouse_report_mode(&self) -> bool {
-        let Some(tab) = self.tabs.get(self.active) else {
-            return false;
-        };
-        let term = tab.terminal.lock();
-        term.mode().intersects(Mode::MOUSE_MODE)
+        self.mouse_mode()
+            .is_some_and(|mode| mode.intersects(Mode::MOUSE_MODE))
     }
 
     pub(crate) fn send_mouse_report(&self, button: u8, col: u16, row: u16, pressed: bool) {
-        let Some(tab) = self.tabs.get(self.active) else {
+        let Some(mode) = self.mouse_mode().filter(|m| m.intersects(Mode::MOUSE_MODE)) else {
             return;
         };
-        let (sgr, utf8, mouse_mode) = {
-            let term = tab.terminal.lock();
-            let mode = term.mode();
-            (
-                mode.contains(Mode::SGR_MOUSE),
-                mode.contains(Mode::UTF8_MOUSE),
-                mode.intersects(Mode::MOUSE_MODE),
-            )
-        };
-        if !mouse_mode {
-            return;
-        }
+        let sgr = mode.contains(Mode::SGR_MOUSE);
+        let utf8 = mode.contains(Mode::UTF8_MOUSE);
         let bytes = encode_mouse_report(button, col, row, pressed, sgr, utf8);
         if std::env::var_os("UTERM_MOUSE_DEBUG").is_some() {
             eprintln!("mouse report: {bytes:?} (sgr={sgr}, utf8={utf8})");
         }
-        let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
+        self.send_mouse_bytes(bytes);
     }
 
     pub(crate) fn send_mouse_motion(&self, col: u16, row: u16) {
-        let Some(tab) = self.tabs.get(self.active) else {
+        let Some(mode) = self.mouse_mode() else {
             return;
         };
-        let (sgr, utf8, report_motion, report_drag) = {
-            let term = tab.terminal.lock();
-            let mode = term.mode();
-            (
-                mode.contains(Mode::SGR_MOUSE),
-                mode.contains(Mode::UTF8_MOUSE),
-                mode.contains(Mode::MOUSE_MOTION),
-                mode.contains(Mode::MOUSE_DRAG),
-            )
-        };
         let any_button = self.mouse_buttons.iter().any(|&b| b);
-        if !report_motion && !(report_drag && any_button) {
+        if !mode.contains(Mode::MOUSE_MOTION) && !(mode.contains(Mode::MOUSE_DRAG) && any_button) {
             return;
         }
         let button = motion_button(
@@ -199,25 +186,31 @@ impl AppState {
             self.mouse_buttons[1],
             self.mouse_buttons[2],
         );
-        let bytes = encode_mouse_report(button, col, row, true, sgr, utf8);
-        let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
+        let bytes = encode_mouse_report(
+            button,
+            col,
+            row,
+            true,
+            mode.contains(Mode::SGR_MOUSE),
+            mode.contains(Mode::UTF8_MOUSE),
+        );
+        self.send_mouse_bytes(bytes);
     }
 
     pub(crate) fn send_wheel_motion(&self, button: u8, col: u16, row: u16) {
         // Report wheel as button motion (64/65) during wheel reporting.
-        let Some(tab) = self.tabs.get(self.active) else {
+        let Some(mode) = self.mouse_mode() else {
             return;
         };
-        let (sgr, utf8) = {
-            let term = tab.terminal.lock();
-            let mode = term.mode();
-            (
-                mode.contains(Mode::SGR_MOUSE),
-                mode.contains(Mode::UTF8_MOUSE),
-            )
-        };
-        let bytes = encode_mouse_report(button, col, row, true, sgr, utf8);
-        let _ = tab.pty.channel.send(Msg::Input(Cow::Owned(bytes)));
+        let bytes = encode_mouse_report(
+            button,
+            col,
+            row,
+            true,
+            mode.contains(Mode::SGR_MOUSE),
+            mode.contains(Mode::UTF8_MOUSE),
+        );
+        self.send_mouse_bytes(bytes);
     }
 
     pub(crate) fn handle_mouse_press(
@@ -236,10 +229,10 @@ impl AppState {
         }
         if state == ElementState::Pressed && button == MouseButton::Left {
             if let Some((idx, close)) = self.tab_bar_hit(x, y) {
-                match crate::keybindings::mouse_action(close) {
-                    crate::keybindings::Action::CloseTabAt => self.close_tab_at(idx, event_loop),
-                    crate::keybindings::Action::SelectTab => self.select_tab(idx),
-                    _ => unreachable!("mouse bindings resolve to tab actions"),
+                if close {
+                    self.remove_tab_index(idx, event_loop);
+                } else {
+                    self.select_tab(idx);
                 }
                 self.local_pointer = LocalPointerState::Idle;
                 self.window.request_redraw();
@@ -361,32 +354,29 @@ impl AppState {
         }
     }
 
-    pub(crate) fn update_local_selection(&mut self, x: f64, y: f64) {
-        if self.local_pointer != LocalPointerState::Selecting || !self.mouse_buttons[0] {
+    fn update_selection_at(&self, x: f64, y: f64) {
+        let Some((col, row, side)) = self.terminal_cell_at(x, y) else {
             return;
+        };
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let mut term = tab.terminal.lock();
+        let line = Line(row as i32 - term.display_offset() as i32);
+        if let Some(sel) = &mut term.selection {
+            sel.update(Pos::new(line, Column(col)), side);
         }
-        if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
-            if let Some(tab) = self.tabs.get(self.active) {
-                let mut term = tab.terminal.lock();
-                let line = Line(row as i32 - term.display_offset() as i32);
-                if let Some(sel) = &mut term.selection {
-                    sel.update(Pos::new(line, Column(col)), side);
-                }
-            }
+    }
+
+    pub(crate) fn update_local_selection(&mut self, x: f64, y: f64) {
+        if self.local_pointer == LocalPointerState::Selecting && self.mouse_buttons[0] {
+            self.update_selection_at(x, y);
         }
     }
 
     pub(crate) fn finish_local_selection(&mut self, x: f64, y: f64) {
         if self.local_pointer == LocalPointerState::Selecting {
-            if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
-                if let Some(tab) = self.tabs.get(self.active) {
-                    let mut term = tab.terminal.lock();
-                    let line = Line(row as i32 - term.display_offset() as i32);
-                    if let Some(sel) = &mut term.selection {
-                        sel.update(Pos::new(line, Column(col)), side);
-                    }
-                }
-            }
+            self.update_selection_at(x, y);
             self.update_primary_selection();
         }
         self.local_pointer = LocalPointerState::Idle;
@@ -648,35 +638,23 @@ pub(crate) fn key_to_bytes(
             Some(b"\x1b[57416u".to_vec())
         }
         Key::Character(s) => {
-            if !ctrl && !alt {
-                if let Some(text) = &k.text {
-                    if !text.is_empty() {
-                        return Some(text.as_bytes().to_vec());
-                    }
-                }
-            }
             if ctrl {
                 return None;
             }
-            let b = if let Some(text) = &k.text {
-                if !text.is_empty() {
-                    text.as_bytes().to_vec()
-                } else {
-                    s.as_bytes().to_vec()
-                }
-            } else {
-                s.as_bytes().to_vec()
-            };
-            if b.is_empty() {
+            let text = k
+                .text
+                .as_deref()
+                .filter(|text| !text.is_empty())
+                .unwrap_or(s.as_str());
+            if text.is_empty() {
                 return None;
             }
+            let mut out = Vec::with_capacity(text.len() + usize::from(alt));
             if alt {
-                let mut out = vec![0x1b];
-                out.extend_from_slice(&b);
-                Some(out)
-            } else {
-                Some(b)
+                out.push(0x1b);
             }
+            out.extend_from_slice(text.as_bytes());
+            Some(out)
         }
         // The numpad Enter is only distinguishable by its location. In
         // application keypad mode xterm sends SS3 M (`kent`); outside it,

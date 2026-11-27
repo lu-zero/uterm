@@ -37,7 +37,6 @@ impl AppState {
         } else if idx < self.active {
             self.active = self.active.saturating_sub(1);
         }
-        self.clamp_active();
         self.sync_window_title();
     }
 
@@ -80,10 +79,6 @@ impl AppState {
         if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
             self.remove_tab_index(idx, event_loop);
         }
-    }
-
-    pub(crate) fn close_tab_at(&mut self, idx: usize, event_loop: &dyn ActiveEventLoop) {
-        self.remove_tab_index(idx, event_loop);
     }
 
     pub(crate) fn next_tab(&mut self) {
