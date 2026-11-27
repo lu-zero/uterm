@@ -101,6 +101,37 @@ pub(crate) fn resolve_ansi_color(color: AnsiColor, colors: &TermColors) -> u32 {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_color_fallbacks_match_the_palette() {
+        let colors = TermColors::default();
+        let expected = [
+            (NamedColor::Foreground, rgb_u32(0xd8, 0xd8, 0xd8)),
+            (NamedColor::LightForeground, rgb_u32(0xd8, 0xd8, 0xd8)),
+            (NamedColor::DimForeground, rgb_u32(0xd8, 0xd8, 0xd8)),
+            (NamedColor::Background, rgb_u32(0x10, 0x10, 0x10)),
+            (NamedColor::Cursor, rgb_u32(0xf0, 0xf0, 0xf0)),
+            (NamedColor::Black, rgb_u32(0, 0, 0)),
+            (NamedColor::DimBlack, rgb_u32(0, 0, 0)),
+            (NamedColor::Red, rgb_u32(0xcd, 0, 0)),
+            (NamedColor::LightRed, rgb_u32(0xff, 0, 0)),
+            (NamedColor::DimRed, rgb_u32(0x88, 0, 0)),
+            (NamedColor::White, rgb_u32(0xe5, 0xe5, 0xe5)),
+            (NamedColor::DimWhite, rgb_u32(0x99, 0x99, 0x99)),
+        ];
+        for (name, color) in expected {
+            assert_eq!(
+                resolve_ansi_color(AnsiColor::Named(name), &colors),
+                color,
+                "{name:?}"
+            );
+        }
+    }
+}
+
 pub(crate) fn arr_to_u32(a: [f32; 4]) -> u32 {
     let r = (a[0].clamp(0.0, 1.0) * 255.0) as u8;
     let g = (a[1].clamp(0.0, 1.0) * 255.0) as u8;
