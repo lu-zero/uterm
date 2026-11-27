@@ -13,7 +13,7 @@ A tiny, urxvt-in-spirit terminal emulator using Rio’s released VT/PTY underpin
 - Keyboard input (text, arrows/home/end/page/insert/delete, F1–F24, Ctrl/Alt combos) with xterm-256color encodings, including Shift+Tab, keypad Enter in application keypad mode, and modifier parameters for function and edit keys
 - Minimal tab support (one shell per tab) with a styled tab bar showing per-tab titles (OSC/title updates), clickable tabs, and per-tab close buttons; tabs also close when the shell exits (e.g. `Ctrl+D`) or via shortcut
 - Window title follows the active tab title
-- Local mouse selection/highlight in the terminal area when mouse reporting is disabled by the application
+- Local mouse selection/highlight in the terminal area when mouse reporting is disabled by the application; double-click selects the whitespace-delimited word, or the full URL when the word is one
 - Basic copy/paste integration for local selection and clipboard (`Ctrl+Shift+C` to copy selection, `Ctrl+Shift+V` to paste; bracketed paste used when enabled by the shell/app)
 - OSC 52 clipboard store/load integration (terminal apps can set/read clipboard via escape sequences, routed per tab)
 - Basic mouse reporting to the terminal (SGR/UTF-8 modes) for button, motion/drag, and wheel events when enabled by applications

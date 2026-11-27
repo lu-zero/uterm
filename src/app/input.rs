@@ -1,13 +1,52 @@
 use super::{AppState, LocalPointerState};
 use rio_vt::clipboard::ClipboardType;
+use rio_vt::crosswords::grid::Dimensions;
 use rio_vt::crosswords::pos::{Column, Line, Pos, Side};
+use rio_vt::crosswords::square::Wide;
 use rio_vt::crosswords::Mode;
 use rio_vt::event::Msg;
 use rio_vt::selection::{Selection, SelectionType};
 use std::borrow::Cow;
+use std::time::{Duration, Instant};
 use winit::event::{ElementState, Modifiers, MouseButton};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, KeyCode, KeyLocation, NamedKey, PhysicalKey};
+
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// Character range of the word under `index`, bounded by whitespace. A word
+/// that looks like a URL is bounded by its trailing punctuation instead, so
+/// the whole address is selected.
+fn selection_bounds(chars: &[char], index: usize) -> Option<(usize, usize)> {
+    let separator = |ch: char| ch.is_whitespace() || ch == '\0';
+    let ch = *chars.get(index)?;
+    if separator(ch) {
+        return None;
+    }
+    let mut start = index;
+    let mut end = index;
+    while start > 0 && !separator(chars[start - 1]) {
+        start -= 1;
+    }
+    while end + 1 < chars.len() && !separator(chars[end + 1]) {
+        end += 1;
+    }
+    let word: String = chars[start..=end].iter().collect();
+    if word.contains("://") || word.contains("www.") {
+        while end > start
+            && matches!(
+                chars[end],
+                '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '>' | '\'' | '"'
+            )
+        {
+            end -= 1;
+        }
+        while start <= end && matches!(chars[start], '(' | '<' | '[' | '{') {
+            start += 1;
+        }
+    }
+    (start <= end).then_some((start, end))
+}
 
 impl AppState {
     pub(crate) fn terminal_cell_at(&self, x: f64, y: f64) -> Option<(usize, usize, Side)> {
@@ -188,20 +227,67 @@ impl AppState {
 
     pub(crate) fn begin_local_selection(&mut self, x: f64, y: f64) {
         self.local_pointer = LocalPointerState::Idle;
-        if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
-            if let Some(tab) = self.tabs.get(self.active) {
-                let mut term = tab.terminal.lock();
-                let point = Pos::new(Line(row as i32), Column(col));
-                term.selection = Some(Selection::new(SelectionType::Simple, point, side));
-            }
-            self.local_pointer = LocalPointerState::Selecting;
+        let Some((col, row, side)) = self.terminal_cell_at(x, y) else {
+            return;
+        };
+        let now = Instant::now();
+        let double = self.last_click.is_some_and(|(at, c, r)| {
+            now.duration_since(at) < DOUBLE_CLICK && c == col && r == row
+        });
+        self.last_click = Some((now, col, row));
+        if double {
+            self.select_word_or_url(row, col);
+            self.update_primary_selection();
+            return;
         }
+        if let Some(tab) = self.tabs.get(self.active) {
+            let mut term = tab.terminal.lock();
+            let point = Pos::new(Line(row as i32), Column(col));
+            term.selection = Some(Selection::new(SelectionType::Simple, point, side));
+        }
+        self.local_pointer = LocalPointerState::Selecting;
+    }
+
+    /// Select the whitespace-delimited word under the cursor, or the whole
+    /// URL when the word looks like one.
+    fn select_word_or_url(&mut self, row: usize, col: usize) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let mut term = tab.terminal.lock();
+        let ncols = term.grid.columns();
+        if col >= ncols {
+            return;
+        }
+        let line = Line(row as i32);
+        let mut chars = Vec::new();
+        let mut cells = Vec::new();
+        for c in 0..ncols {
+            let square = term.grid[Pos::new(line, Column(c))];
+            if matches!(square.wide(), Wide::Spacer | Wide::LeadingSpacer) {
+                continue;
+            }
+            chars.push(square.c());
+            cells.push(c);
+        }
+        let index = cells.iter().rposition(|&c| c <= col).unwrap_or(0);
+        let Some((start, end)) = selection_bounds(&chars, index) else {
+            return;
+        };
+        let mut selection = Selection::new(
+            SelectionType::Simple,
+            Pos::new(line, Column(cells[start])),
+            Side::Left,
+        );
+        selection.update(Pos::new(line, Column(cells[end])), Side::Right);
+        term.selection = Some(selection);
     }
 
     pub(crate) fn update_local_selection(&mut self, x: f64, y: f64) {
         if self.local_pointer != LocalPointerState::Selecting || !self.mouse_buttons[0] {
             return;
         }
+        self.last_click = None;
         if let Some((col, row, side)) = self.terminal_cell_at(x, y) {
             if let Some(tab) = self.tabs.get(self.active) {
                 let mut term = tab.terminal.lock();
@@ -558,7 +644,7 @@ pub(crate) fn key_to_bytes(
 mod tests {
     use super::{
         cursor_key_bytes, edit_key_bytes, encode_mouse_report, function_key_bytes,
-        function_key_index, key_to_bytes, motion_button, named_key_code,
+        function_key_index, key_to_bytes, motion_button, named_key_code, selection_bounds,
     };
     use winit::event::{ElementState, KeyEvent, Modifiers};
     use winit::keyboard::{
@@ -734,6 +820,28 @@ mod tests {
         assert_eq!(
             key_to_bytes(&physical_comma, none, false, false).as_deref(),
             Some(&b"\x1b[57416u"[..])
+        );
+    }
+
+    #[test]
+    fn double_click_bounds_words_and_urls() {
+        let selected = |text: &str, at: usize| {
+            let chars: Vec<char> = text.chars().collect();
+            selection_bounds(&chars, at)
+                .map(|(start, end)| chars[start..=end].iter().collect::<String>())
+        };
+        assert_eq!(selected("hello world", 2).as_deref(), Some("hello"));
+        assert_eq!(selected("foo.bar", 4).as_deref(), Some("foo.bar"));
+        assert_eq!(selected("hi  x", 2), None);
+
+        let url = "see https://example.com/a?b=1. now";
+        assert_eq!(
+            selected(url, 20).as_deref(),
+            Some("https://example.com/a?b=1")
+        );
+        assert_eq!(
+            selected("<www.example.com>", 6).as_deref(),
+            Some("www.example.com")
         );
     }
 

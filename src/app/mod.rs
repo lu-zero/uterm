@@ -98,6 +98,8 @@ pub(crate) struct AppState {
     pub(crate) cursor_pos: (f64, f64),
     pub(crate) mouse_buttons: [bool; 3], // left, middle, right
     pub(crate) local_pointer: LocalPointerState,
+    /// Last left-press for double-click detection: (time, column, row).
+    pub(crate) last_click: Option<(Instant, usize, usize)>,
     pub(crate) clipboard: SystemClipboard,
     pub(crate) geometry_locked: bool,
     /// (timestamp, text) of the transient "cols x rows" overlay shown after a resize.
@@ -156,6 +158,7 @@ impl AppState {
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
             local_pointer: LocalPointerState::Idle,
+            last_click: None,
             clipboard,
             geometry_locked: false,
             resize_overlay: None,
