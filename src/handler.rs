@@ -19,7 +19,7 @@ use winit::application::ApplicationHandler;
 use winit::data_transfer::TypeHint;
 use winit::dpi::LogicalSize;
 use winit::event::{ButtonSource, ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, AsyncRequestSerial, ControlFlow, DndAction};
+use winit::event_loop::{ActiveEventLoop, AsyncRequestSerial, DndAction};
 use winit::window::{Window, WindowAttributes, WindowId as WinitWindowId};
 
 pub(crate) struct Uterm {
@@ -143,6 +143,8 @@ impl Uterm {
 }
 
 impl ApplicationHandler for Uterm {
+    /// Startup is one-way: `state` marks a running app, `error` survives
+    /// `run_app` consuming the handler so `run` can report a failed start.
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.state.is_some() || self.error.borrow().is_some() {
             return;
@@ -182,8 +184,7 @@ impl ApplicationHandler for Uterm {
                     self.fail(event_loop, err);
                     return;
                 }
-                st.show_resize_overlay();
-                event_loop.set_control_flow(ControlFlow::wait_duration(OVERLAY_TIMEOUT));
+                st.show_resize_overlay(event_loop);
                 st.window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -205,6 +206,8 @@ impl ApplicationHandler for Uterm {
                 st.modifiers = m;
             }
             WindowEvent::DragEntered { id, .. } => {
+                // A new drag supersedes any request left over from the last one.
+                self.pending_drop = None;
                 // Accept the drag so the OS sends DragDropped rather than DragLeft.
                 let _ = event_loop.set_valid_dnd_actions(id, &[DndAction::Copy]);
             }
@@ -251,8 +254,7 @@ impl ApplicationHandler for Uterm {
             }
             WindowEvent::Focused(false) => {
                 // No release event arrives after the focus loss.
-                st.mouse_buttons = [false; 3];
-                st.local_pointer = LocalPointerState::Idle;
+                st.reset_pointer();
             }
             WindowEvent::PointerMoved { position, .. } => {
                 st.cursor_pos = (position.x, position.y);
@@ -365,12 +367,13 @@ impl ApplicationHandler for Uterm {
         let Some(st) = &mut self.state else {
             return;
         };
-        if let Some((since, _)) = st.resize_overlay {
-            if since.elapsed() >= OVERLAY_TIMEOUT {
-                st.resize_overlay = None;
-                st.window.request_redraw();
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
+        if st
+            .resize_overlay
+            .as_ref()
+            .is_some_and(|(since, _)| since.elapsed() >= OVERLAY_TIMEOUT)
+        {
+            st.clear_resize_overlay(event_loop);
+            st.window.request_redraw();
         }
     }
 }

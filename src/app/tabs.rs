@@ -1,4 +1,4 @@
-use super::{AppState, LocalPointerState};
+use super::AppState;
 use crate::error::Error;
 use crate::terminal::Tab;
 use winit::event_loop::ActiveEventLoop;
@@ -19,6 +19,8 @@ impl AppState {
         }
     }
 
+    /// The one removal path: keeps `active` in range and owns the exit when
+    /// the last tab goes away.
     pub(crate) fn remove_tab_index(&mut self, idx: usize, event_loop: &dyn ActiveEventLoop) {
         if idx >= self.tabs.len() {
             return;
@@ -27,7 +29,7 @@ impl AppState {
         self.tabs.remove(idx);
         if self.tabs.is_empty() {
             self.active = 0;
-            self.local_pointer = LocalPointerState::Idle;
+            self.reset_pointer();
             event_loop.exit();
             self.window.set_title("uterm");
             return;

@@ -1,4 +1,4 @@
-use super::{AppState, LocalPointerState};
+use super::{AppState, Click, LocalPointerState};
 use rio_vt::clipboard::ClipboardType;
 use rio_vt::crosswords::grid::Dimensions;
 use rio_vt::crosswords::pos::{Column, Line, Pos, Side};
@@ -234,7 +234,7 @@ impl AppState {
                 } else {
                     self.select_tab(idx);
                 }
-                self.local_pointer = LocalPointerState::Idle;
+                self.reset_pointer();
                 self.window.request_redraw();
                 return;
             }
@@ -295,30 +295,25 @@ impl AppState {
         let Some((col, row, side)) = self.terminal_cell_at(x, y) else {
             return;
         };
-        let now = Instant::now();
-        let (count, double) = match self.last_click {
-            Some((at, px, py, n))
-                if now.duration_since(at) < DOUBLE_CLICK
-                    && (x - px).abs() <= self.cell_w as f64
-                    && (y - py).abs() <= self.cell_h as f64 =>
-            {
-                (n + 1, n == 1)
-            }
-            _ => (1, false),
+        let click = Click {
+            at: Instant::now(),
+            x,
+            y,
         };
+        let sequence =
+            self.clicks
+                .advance(click, self.cell_w as f64, self.cell_h as f64, DOUBLE_CLICK);
+        let count = sequence.count();
         if std::env::var_os("UTERM_MOUSE_DEBUG").is_some() {
-            eprintln!(
-                "click {col},{row} at ({x:.1},{y:.1}): count={count}, last={:?}",
-                self.last_click.map(|(_, x, y, _)| (x, y))
-            );
+            eprintln!("click {col},{row} at ({x:.1},{y:.1}): count={count}");
         }
-        self.last_click = Some((now, x, y, count));
+        self.clicks = sequence;
         if count >= 3 {
             self.select_line(row);
             self.update_primary_selection();
             return;
         }
-        if double {
+        if count == 2 {
             self.select_word_or_url(row, col);
             self.update_primary_selection();
             return;

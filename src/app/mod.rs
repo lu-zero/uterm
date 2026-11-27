@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use term_atlas::{Atlas, Face, GlyphRect, PixelFormat};
 use winit::dpi::{PhysicalSize, Size};
 use winit::event::Modifiers;
-use winit::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, OwnedDisplayHandle};
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::Window;
 
@@ -32,6 +32,61 @@ pub(crate) const OVERLAY_TIMEOUT: Duration = Duration::from_millis(1400);
 pub(crate) enum LocalPointerState {
     Idle,
     Selecting,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Click {
+    pub(crate) at: Instant,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+}
+
+/// How many consecutive presses are in the current gesture. A fourth press
+/// keeps selecting a line, like the third.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ClickSequence {
+    None,
+    First(Click),
+    Second(Click),
+    Third(Click),
+}
+
+impl ClickSequence {
+    fn last(self) -> Option<Click> {
+        match self {
+            Self::None => None,
+            Self::First(click) | Self::Second(click) | Self::Third(click) => Some(click),
+        }
+    }
+
+    pub(crate) fn count(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::First(_) => 1,
+            Self::Second(_) => 2,
+            Self::Third(_) => 3,
+        }
+    }
+
+    pub(crate) fn advance(
+        self,
+        click: Click,
+        tolerance_x: f64,
+        tolerance_y: f64,
+        interval: Duration,
+    ) -> Self {
+        let chained = self.last().is_some_and(|last| {
+            click.at.duration_since(last.at) < interval
+                && (click.x - last.x).abs() <= tolerance_x
+                && (click.y - last.y).abs() <= tolerance_y
+        });
+        match (chained, self) {
+            (true, Self::First(_)) => Self::Second(click),
+            (true, Self::Second(_)) => Self::Third(click),
+            (true, Self::Third(_)) => Self::Third(click),
+            _ => Self::First(click),
+        }
+    }
 }
 
 /// The system clipboard together with the display handle it borrows from.
@@ -98,8 +153,8 @@ pub(crate) struct AppState {
     pub(crate) cursor_pos: (f64, f64),
     pub(crate) mouse_buttons: [bool; 3], // left, middle, right
     pub(crate) local_pointer: LocalPointerState,
-    /// Last left-press and click count in the sequence: (time, x, y, count).
-    pub(crate) last_click: Option<(Instant, f64, f64, u8)>,
+    /// Consecutive left presses in the current gesture.
+    pub(crate) clicks: ClickSequence,
     pub(crate) clipboard: SystemClipboard,
     pub(crate) geometry_locked: bool,
     /// (timestamp, text) of the transient "cols x rows" overlay shown after a resize.
@@ -158,7 +213,7 @@ impl AppState {
             cursor_pos: (0.0, 0.0),
             mouse_buttons: [false; 3],
             local_pointer: LocalPointerState::Idle,
-            last_click: None,
+            clicks: ClickSequence::None,
             clipboard,
             geometry_locked: false,
             resize_overlay: None,
@@ -169,6 +224,14 @@ impl AppState {
         Ok(st)
     }
 
+    /// Drop the whole pointer gesture: button state, selection drag and click
+    /// sequence together. Used on focus loss and when the last tab closes.
+    pub(crate) fn reset_pointer(&mut self) {
+        self.local_pointer = LocalPointerState::Idle;
+        self.mouse_buttons = [false; 3];
+        self.clicks = ClickSequence::None;
+    }
+
     pub(crate) fn sync_font_metrics(&mut self, scale: f64) -> Result<(), Error> {
         self.atlas = atlas_for(&self.face, self.font_size, scale);
         self.cell_w = self.atlas.cell().0 as usize;
@@ -176,6 +239,7 @@ impl AppState {
         Ok(())
     }
 
+    /// Single mutator for the lock flag and the window's resizability.
     fn set_resize_lock(&mut self, locked: bool) {
         self.geometry_locked = locked;
         // Lock the window as well as the grid; otherwise dragging the window
@@ -287,9 +351,15 @@ impl AppState {
         self.request_grid_size(cols, rows)
     }
 
-    pub(crate) fn show_resize_overlay(&mut self) {
+    pub(crate) fn show_resize_overlay(&mut self, event_loop: &dyn ActiveEventLoop) {
         let (cols, rows) = self.grid_dims();
         self.resize_overlay = Some((Instant::now(), format!("{}x{}", cols, rows)));
+        event_loop.set_control_flow(ControlFlow::wait_duration(OVERLAY_TIMEOUT));
+    }
+
+    pub(crate) fn clear_resize_overlay(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.resize_overlay = None;
+        event_loop.set_control_flow(ControlFlow::Wait);
     }
 
     pub(crate) fn set_geometry_from_size(&mut self, size: PhysicalSize<u32>) -> Result<(), Error> {
@@ -391,6 +461,35 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn click_sequence_counts_only_close_repeated_presses() {
+        let start = Instant::now();
+        let at = |ms| Click {
+            at: start + Duration::from_millis(ms),
+            x: 10.0,
+            y: 20.0,
+        };
+        let advance =
+            |seq: ClickSequence, click| seq.advance(click, 10.0, 20.0, Duration::from_millis(500));
+        let seq = advance(ClickSequence::None, at(0));
+        assert_eq!(seq.count(), 1);
+        let seq = advance(seq, at(100));
+        assert_eq!(seq.count(), 2);
+        let seq = advance(seq, at(200));
+        assert_eq!(seq.count(), 3);
+        let seq = advance(seq, at(300));
+        assert_eq!(seq.count(), 3);
+
+        // Too late, or far away, starts a new gesture.
+        assert_eq!(advance(seq, at(900)).count(), 1);
+        let moved = Click {
+            at: start + Duration::from_millis(400),
+            x: 100.0,
+            y: 20.0,
+        };
+        assert_eq!(advance(seq, moved).count(), 1);
+    }
 
     #[test]
     fn preset_sizes_map_back_to_the_same_grid() {
